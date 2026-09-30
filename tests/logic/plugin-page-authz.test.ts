@@ -12,7 +12,6 @@ import clientPlugins from '../../client/plugins.js';
 const PAGE_GRANT_PLUGINS = [
   '@nocobase/app-plugin-users',
   '@nocobase/app-plugin-notification',
-  '@nocobase/app-plugin-ai-employee',
   '@nocobase/app-plugin-api-keys',
   '@nocobase/app-plugin-database-explorer',
 ];

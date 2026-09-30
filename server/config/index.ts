@@ -16,7 +16,6 @@ import i18n from './i18n.js';
 import app from './app.js';
 import database from './database.js';
 import snowflake from './snowflake.js';
-import ai from './ai.js';
 import workflow from './workflow.js';
 
 const defaultConfigs: AppConfigFactory<{
@@ -34,7 +33,6 @@ const defaultConfigs: AppConfigFactory<{
   app: ReturnType<typeof app>;
   database: ReturnType<typeof database>;
   snowflake: ReturnType<typeof snowflake>;
-  ai: ReturnType<typeof ai>;
   workflow: ReturnType<typeof workflow>;
 }> = defaultAppConfigs({
   auth,
@@ -51,7 +49,6 @@ const defaultConfigs: AppConfigFactory<{
   app,
   database,
   snowflake,
-  ai,
   workflow,
 });
 
