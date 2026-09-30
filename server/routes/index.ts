@@ -201,15 +201,11 @@ export default [
         );
       // Tasks of archived Checks stay stored as evidence but leave the workspace with their Check.
       const activeCheckIds = new Set(checks.map((check) => check.id));
-      // Applicability, tasks and exclusions of archived objects stay stored but leave the workspace with their object.
-      const activeObjectIds = new Set(objects.map((object) => object.id));
       const tasks = (
         await db.repository<Task>('qcTasks').findMany({ filter: { projectId } })
-      ).filter(
-        (task) =>
-          activeCheckIds.has(task.checkId) &&
-          (task.objectId === null || activeObjectIds.has(task.objectId)),
-      );
+      ).filter((task) => activeCheckIds.has(task.checkId));
+      // Applicability of archived objects stays stored but leaves the workspace with its object.
+      const activeObjectIds = new Set(objects.map((object) => object.id));
       const applicability = (
         await db
           .repository<Applicability>('qcApplicability')
@@ -219,10 +215,7 @@ export default [
         await db
           .repository<CheckExclusion>('qcCheckExclusions')
           .findMany({ filter: { projectId } })
-      ).filter(
-        (row) =>
-          activeCheckIds.has(row.checkId) && activeObjectIds.has(row.objectId),
-      );
+      ).filter((row) => activeCheckIds.has(row.checkId));
       return c.json({
         data: {
           exclusions,
@@ -405,13 +398,9 @@ export default [
             ? !(await conn.repository<Dimension>('qcDimensions').exists({
                 filter: { id: dimensionId, projectId, active: true },
               }))
-            : // Applicability of an archived object stays stored, so the object itself must still be active.
-              !(await conn
+            : !(await conn
                 .repository<Applicability>('qcApplicability')
-                .exists({ filter: { projectId, objectId, dimensionId } })) ||
-              !(await conn
-                .repository<TestObject>('qcObjects')
-                .exists({ filter: { id: objectId, projectId, active: true } }))
+                .exists({ filter: { projectId, objectId, dimensionId } }))
         )
           throw new HTTPException(400, { message: 'INVALID_APPLICABILITY' });
         const check = (

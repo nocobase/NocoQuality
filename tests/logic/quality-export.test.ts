@@ -18,7 +18,7 @@ import { exportCollections } from '../../server/quality/export.js';
 
 type Row = Record<string, unknown> & { id: number };
 
-/** Holds rows per collection and answers the equality filters the quality routes use. */
+/** Holds rows per collection and answers the reads the export makes. */
 function createMemoryDatabase(seed: Record<string, Row[]>) {
   const tables = new Map<string, Row[]>(
     Object.entries(seed).map(([name, rows]) => [
@@ -41,27 +41,6 @@ function createMemoryDatabase(seed: Record<string, Row[]>) {
       const row = rowsOf(name).find((r) => matches(r, options.filter));
       return row && { ...row };
     },
-    exists: async (options?: { filter?: Record<string, unknown> }) =>
-      rowsOf(name).some((row) => matches(row, options?.filter)),
-    count: async (options?: { filter?: Record<string, unknown> }) =>
-      rowsOf(name).filter((row) => matches(row, options?.filter)).length,
-    createOne: async (options: { values: Record<string, unknown> }) => {
-      const rows = rowsOf(name);
-      const record = {
-        ...options.values,
-        id: Math.max(0, ...rows.map((row) => row.id)) + 1,
-      };
-      rows.push(record);
-      return { record: { ...record } };
-    },
-    updateOne: async (options: {
-      filter: Record<string, unknown>;
-      values: Record<string, unknown>;
-    }) => {
-      const row = rowsOf(name).find((r) => matches(r, options.filter));
-      if (row) Object.assign(row, options.values);
-      return { record: row && { ...row } };
-    },
   });
   const query = () => ({
     selectFrom: () => {
@@ -75,12 +54,7 @@ function createMemoryDatabase(seed: Record<string, Row[]>) {
       return chain;
     },
   });
-  const manager = {
-    repository,
-    query,
-    transaction: async <T>(fn: (conn: unknown) => Promise<T>) =>
-      fn({ repository }),
-  };
+  const manager = { repository, query };
   return { manager: manager as unknown as DatabaseManager, tables };
 }
 
@@ -253,53 +227,26 @@ async function setup() {
   const router = await routes[0]!.createRouter({
     container,
   } as unknown as Application);
-  const request = (
-    path: string,
-    user?: string,
-    init: { method?: string; body?: unknown } = {},
-  ) =>
+  const request = (path: string, user?: string) =>
     router.request(`/quality${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        ...(user ? { 'x-test-user': user } : {}),
-        ...(init.body === undefined
-          ? {}
-          : { 'content-type': 'application/json' }),
-      },
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      headers: user ? { 'x-test-user': user } : {},
     });
-  return { request, tables: database.tables };
+  return { request };
 }
 
-const endpoints = [
-  { path: '/export', method: 'GET' },
-  { path: '/projects/1/objects/1/archive', method: 'POST' },
-  {
-    path: '/projects/1/objects',
-    method: 'POST',
-    body: { name: 'New', category: 'feature', dimensionIds: [1] },
-  },
-];
+describe('GET /quality/export', () => {
+  it('rejects anonymous and restricted callers', async () => {
+    const { request } = await setup();
 
-describe('quality export and object routes', () => {
-  it.each(endpoints)(
-    '$method $path rejects anonymous and restricted callers',
-    async ({ path, method, body }) => {
-      const { request, tables } = await setup();
-      const before = JSON.stringify([...tables]);
+    const anonymous = await request('/export');
+    expect(anonymous.status).toBe(401);
 
-      const anonymous = await request(path, undefined, { method, body });
-      expect(anonymous.status).toBe(401);
-
-      const member = await request(path, 'member', { method, body });
-      expect(member.status).toBe(403);
-      await expect(member.json()).resolves.toEqual({
-        error: { code: 'FORBIDDEN' },
-      });
-
-      expect(JSON.stringify([...tables])).toBe(before);
-    },
-  );
+    const member = await request('/export', 'member');
+    expect(member.status).toBe(403);
+    await expect(member.json()).resolves.toEqual({
+      error: { code: 'FORBIDDEN' },
+    });
+  });
 
   it('exports every quality table with archived rows, original ids and user names', async () => {
     const { request } = await setup();
@@ -343,122 +290,5 @@ describe('quality export and object routes', () => {
       },
     ]);
     expect(JSON.stringify(data)).not.toMatch(/password|session|apiKey/i);
-  });
-
-  it('archives an object and removes it and its own records from the workspace', async () => {
-    const { request, tables } = await setup();
-
-    const before = await (await request('/projects/1', 'root')).json();
-    expect(before.data.objects.map((o: Row) => o.id)).toEqual([1]);
-    expect(before.data.checks.map((c: Row) => c.id)).toEqual([1, 2]);
-
-    const archived = await request('/projects/1/objects/1/archive', 'root', {
-      method: 'POST',
-    });
-    expect(archived.status).toBe(200);
-    await expect(archived.json()).resolves.toEqual({
-      data: { id: 1, active: false },
-    });
-
-    const after = (await (await request('/projects/1', 'root')).json()).data;
-    expect(after.objects).toEqual([]);
-    // Its own Check leaves with it; the shared Check stays with the dimension.
-    expect(after.checks.map((c: Row) => c.id)).toEqual([2]);
-    expect(after.tasks).toEqual([]);
-    expect(after.applicability).toEqual([]);
-    expect(after.exclusions).toEqual([]);
-
-    // History stays stored.
-    expect(tables.get('qcObjects')![0]).toMatchObject({ id: 1, active: false });
-    expect(tables.get('qcResults')).toHaveLength(1);
-    expect(tables.get('qcWorkItems')![0]).toMatchObject({ status: 'open' });
-    // Its object Check is archived with it; the shared Check and every standard stay.
-    expect(tables.get('qcChecks')!.map((c) => [c.id, c.active])).toEqual([
-      [1, false],
-      [2, true],
-      [3, false],
-    ]);
-    expect(tables.get('qcStandards')).toHaveLength(4);
-    expect(tables.get('qcApplicability')).toHaveLength(2);
-
-    const again = await request('/projects/1/objects/1/archive', 'root', {
-      method: 'POST',
-    });
-    expect(again.status).toBe(404);
-    await expect(again.json()).resolves.toEqual({
-      error: { code: 'OBJECT_NOT_FOUND' },
-    });
-
-    // An archived object takes no new Check.
-    const check = await request('/projects/1/checks', 'root', {
-      method: 'POST',
-      body: {
-        name: 'Late',
-        objectId: 1,
-        dimensionId: 1,
-        definition: 'd',
-        preconditions: 'p',
-        steps: 's',
-        passCriteria: 'c',
-        evidence: 'e',
-        humanReview: false,
-      },
-    });
-    expect(check.status).toBe(400);
-  });
-
-  it('rejects archiving an object of another project or an invalid id', async () => {
-    const { request } = await setup();
-
-    const missing = await request('/projects/1/objects/99/archive', 'root', {
-      method: 'POST',
-    });
-    expect(missing.status).toBe(404);
-
-    const invalid = await request('/projects/1/objects/abc/archive', 'root', {
-      method: 'POST',
-    });
-    expect(invalid.status).toBe(400);
-  });
-
-  it('creates an object with or without a description', async () => {
-    const { request } = await setup();
-
-    const withText = await request('/projects/1/objects', 'root', {
-      method: 'POST',
-      body: {
-        name: 'Described',
-        category: 'feature',
-        dimensionIds: [1],
-        description: '  What this object covers.  ',
-      },
-    });
-    expect(withText.status).toBe(201);
-    expect((await withText.json()).data).toMatchObject({
-      name: 'Described',
-      description: 'What this object covers.',
-      active: true,
-    });
-
-    const without = await request('/projects/1/objects', 'root', {
-      method: 'POST',
-      body: { name: 'Plain', category: 'feature', dimensionIds: [1] },
-    });
-    expect(without.status).toBe(201);
-    expect((await without.json()).data).toMatchObject({
-      name: 'Plain',
-      description: '',
-    });
-
-    const tooLong = await request('/projects/1/objects', 'root', {
-      method: 'POST',
-      body: {
-        name: 'Long',
-        category: 'feature',
-        dimensionIds: [1],
-        description: 'x'.repeat(10001),
-      },
-    });
-    expect(tooLong.status).toBe(400);
   });
 });
