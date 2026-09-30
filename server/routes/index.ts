@@ -62,6 +62,7 @@ const objectSchema = z
       'deployment',
       'testing',
     ]),
+    description: z.string().trim().max(10000).default(''),
     dimensionIds: z.array(id).min(1).max(50),
   })
   .strict();
@@ -193,9 +194,13 @@ export default [
       const tasks = (
         await db.repository<Task>('qcTasks').findMany({ filter: { projectId } })
       ).filter((task) => activeCheckIds.has(task.checkId));
-      const applicability = await db
-        .repository<Applicability>('qcApplicability')
-        .findMany({ filter: { projectId } });
+      // Applicability of archived objects stays stored but leaves the workspace with its object.
+      const activeObjectIds = new Set(objects.map((object) => object.id));
+      const applicability = (
+        await db
+          .repository<Applicability>('qcApplicability')
+          .findMany({ filter: { projectId } })
+      ).filter((row) => activeObjectIds.has(row.objectId));
       const exclusions = (
         await db
           .repository<CheckExclusion>('qcCheckExclusions')
@@ -235,7 +240,7 @@ export default [
               key: randomUUID(),
               name: input.name,
               category: input.category,
-              description: '',
+              description: input.description,
               active: true,
             },
           })
@@ -247,6 +252,33 @@ export default [
         return object;
       });
       return c.json({ data: result }, 201);
+    });
+    // Removing an object archives it together with its object Checks; standards, results and evidence remain for audit.
+    router.post('/projects/:id/objects/:objectId/archive', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const objectId = id.parse(c.req.param('objectId'));
+      await db.transaction(async (conn) => {
+        const repo = conn.repository<TestObject>('qcObjects');
+        if (
+          !(await repo.exists({
+            filter: { id: objectId, projectId, active: true },
+          }))
+        )
+          throw new HTTPException(404, { message: 'OBJECT_NOT_FOUND' });
+        await repo.updateOne({
+          filter: { id: objectId, projectId },
+          values: { active: false },
+        });
+        const checks = await conn.repository<Check>('qcChecks').findMany({
+          filter: { projectId, objectId, scope: 'object', active: true },
+        });
+        for (const check of checks)
+          await conn.repository<Check>('qcChecks').updateOne({
+            filter: { id: check.id, projectId },
+            values: { active: false },
+          });
+      });
+      return c.json({ data: { id: objectId, active: false } });
     });
     // Includes or pauses a whole group of objects at once, all or nothing.
     router.post('/projects/:id/objects/testing', async (c) => {
