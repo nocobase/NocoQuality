@@ -1,0 +1,55 @@
+# Quick checks for pull requests into main: typecheck, plus eslint and prettier on the files the pull request changes.
+# Tests, build and e2e are left to local `pnpm check`, so that a pull request gets a pass signal within a few minutes.
+name: pr-check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-check:
+    name: quick-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Collect changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A manual run has no pull request; compare with main instead.
+          base="${BASE_SHA:-origin/main}"
+          git diff --name-only -z --diff-filter=ACMR "$base"...HEAD > "$RUNNER_TEMP/changed"
+          grep -zE '\.(js|jsx|mjs|cjs|ts|tsx|mts|cts)$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/changed-lint" || true
+          echo "Changed files:"
+          tr '\0' '\n' < "$RUNNER_TEMP/changed"
+      - name: Lint changed files
+        run: |
+          if [ ! -s "$RUNNER_TEMP/changed-lint" ]; then
+            echo "No changed JavaScript or TypeScript files; skipping."
+            exit 0
+          fi
+          xargs -0 pnpm exec eslint --max-warnings 0 --no-warn-ignored < "$RUNNER_TEMP/changed-lint"
+      - name: Check formatting of changed files
+        run: |
+          if [ ! -s "$RUNNER_TEMP/changed" ]; then
+            echo "No changed files; skipping."
+            exit 0
+          fi
+          xargs -0 pnpm exec prettier --check --ignore-unknown < "$RUNNER_TEMP/changed"
