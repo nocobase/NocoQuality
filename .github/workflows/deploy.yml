@@ -2,6 +2,11 @@
 # Needs the repository variables HUB_URL and HUB_APP_ID and the secret HUB_API_KEY (a Hub publishing key bound to
 # this App with upload-release and deploy). Without the key the job only reports that deployment is not configured.
 # The Hub keeps the App's runtime configuration: deployments omit --config and reuse it.
+# The upload to the Hub can be slow enough for the Hub to cut the request (INVALID_HUB_RESPONSE), so the deploy step
+# retries up to 3 times; `hub deploy` sends an idempotency key, so a repeated attempt is safe.
+# When the job fails, the last step creates a high-priority issue in the NocoProject project (repository variables
+# NOCOPROJECT_URL and NOCOPROJECT_PROJECT_ID, secret NOCOPROJECT_API_KEY, a personal NocoProject API key); without the
+# secret it only prints a warning.
 name: deploy
 
 on:
@@ -16,7 +21,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       HUB_URL: ${{ vars.HUB_URL }}
       HUB_APP_ID: ${{ vars.HUB_APP_ID }}
@@ -32,6 +37,7 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
+        id: checkout
         if: steps.settings.outputs.ready == 'true'
       - uses: pnpm/action-setup@v4
         if: steps.settings.outputs.ready == 'true'
@@ -41,11 +47,92 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install
+        id: install
         if: steps.settings.outputs.ready == 'true'
         run: pnpm install --frozen-lockfile
       - name: Build for the Hub (linux x64, Node 24)
+        id: build
         if: steps.settings.outputs.ready == 'true'
         run: pnpm build --tar --target linux-x64 --node-version 24
-      - name: Deploy
+      - name: Deploy (up to 3 attempts)
+        id: deploy
         if: steps.settings.outputs.ready == 'true'
-        run: pnpm nocobase hub deploy --json
+        run: |
+          max=3
+          for attempt in $(seq 1 "$max"); do
+            echo "::group::hub deploy, attempt $attempt of $max"
+            # A hung attempt is stopped after 10 minutes; the Hub itself cuts a request at 300 s.
+            if timeout 600 pnpm nocobase hub deploy --json; then
+              echo "::endgroup::"
+              echo "Deployed on attempt $attempt."
+              exit 0
+            else
+              code=$?
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -lt "$max" ]; then
+              echo "::warning::hub deploy attempt $attempt failed (exit $code); retrying in 30 s."
+              sleep 30
+            else
+              echo "::error::hub deploy failed $max times (last exit $code)."
+            fi
+          done
+          exit 1
+      - name: Report the failure to NocoProject
+        if: failure()
+        env:
+          NOCOPROJECT_URL: ${{ vars.NOCOPROJECT_URL }}
+          NOCOPROJECT_PROJECT_ID: ${{ vars.NOCOPROJECT_PROJECT_ID }}
+          NOCOPROJECT_API_KEY: ${{ secrets.NOCOPROJECT_API_KEY }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          PUSHER: ${{ github.event.pusher.name || github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          OUTCOME_SETTINGS: ${{ steps.settings.outcome }}
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_INSTALL: ${{ steps.install.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_DEPLOY: ${{ steps.deploy.outcome }}
+        run: |
+          if [ -z "$NOCOPROJECT_API_KEY" ] || [ -z "$NOCOPROJECT_URL" ] || [ -z "$NOCOPROJECT_PROJECT_ID" ]; then
+            echo "::warning::NocoProject alert is not configured (NOCOPROJECT_URL, NOCOPROJECT_PROJECT_ID, NOCOPROJECT_API_KEY); no issue created."
+            exit 0
+          fi
+          failed="其他步骤（setup 等）"
+          [ "$OUTCOME_SETTINGS" = failure ] && failed="Check deployment settings"
+          [ "$OUTCOME_CHECKOUT" = failure ] && failed="Checkout"
+          [ "$OUTCOME_INSTALL" = failure ] && failed="Install"
+          [ "$OUTCOME_BUILD" = failure ] && failed="Build for the Hub"
+          [ "$OUTCOME_DEPLOY" = failure ] && failed="Deploy（hub deploy 已重试 3 次）"
+          if [ -z "$COMMIT_MESSAGE" ]; then
+            COMMIT_MESSAGE="$(git log -1 --format=%B "$GITHUB_SHA" 2>/dev/null || echo '（手动触发，未取得提交信息）')"
+          fi
+          short="${GITHUB_SHA::7}"
+          description="$(cat <<EOF
+          NocoQuality 推送到 main 后的自动部署失败，线上应用可能仍是旧版本。
+
+          - 提交：\`$GITHUB_SHA\`
+          - 提交信息：$(printf '%s' "$COMMIT_MESSAGE" | head -n 1)
+          - 推送人：$PUSHER
+          - 触发方式：$GITHUB_EVENT_NAME（第 $RUN_ATTEMPT 次运行）
+          - 失败步骤：$failed
+          - 工作流运行：$RUN_URL
+
+          提示：多为上传 Hub 超时，可重跑工作流或从本机部署（\`pnpm build --tar --target linux-x64 --node-version 24\` 后 \`pnpm nocobase hub deploy\`）。
+          EOF
+          )"
+          payload="$(jq -n \
+            --arg projectId "$NOCOPROJECT_PROJECT_ID" \
+            --arg title "NocoQuality 部署失败：$short" \
+            --arg description "$description" \
+            '{projectId: $projectId, title: $title, description: $description, priority: "high"}')"
+          status="$(curl -sS -o response.json -w '%{http_code}' --retry 3 --retry-all-errors --max-time 30 \
+            -X POST "${NOCOPROJECT_URL%/}/api/np/issues" \
+            -H 'content-type: application/json' \
+            -H "x-api-key: $NOCOPROJECT_API_KEY" \
+            --data "$payload")" || status="curl-error"
+          if [ "$status" = 201 ]; then
+            echo "Created NocoProject issue $(jq -r '.data.identifier // .data.issue.identifier // .data.id' response.json)."
+          else
+            echo "::warning::Could not create the NocoProject issue (HTTP $status): $(head -c 500 response.json 2>/dev/null)"
+          fi
