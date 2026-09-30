@@ -1,4 +1,5 @@
 import { importRun, runImportSchema } from '../quality/runs.js';
+import { exportQualityData } from '../quality/export.js';
 import { notificationServiceToken } from '@nocobase/app-plugin-notification';
 import type { Application } from '@nocobase/app-server/application';
 import { randomUUID } from 'node:crypto';
@@ -124,6 +125,15 @@ export default [
       console.error('Quality request failed', error);
       return c.json({ error: { code: 'REQUEST_FAILED' } }, 500);
     });
+    // Full backup of every quality table, archived records included; the only copy of the data lives online.
+    router.get('/export', async (c) =>
+      c.json({
+        data: await exportQualityData(
+          db,
+          app.container.resolve(userAdministrationServiceToken),
+        ),
+      }),
+    );
     router.get('/projects', async (c) =>
       c.json({
         data: await db
@@ -191,11 +201,15 @@ export default [
         );
       // Tasks of archived Checks stay stored as evidence but leave the workspace with their Check.
       const activeCheckIds = new Set(checks.map((check) => check.id));
+      // Applicability, tasks and exclusions of archived objects stay stored but leave the workspace with their object.
+      const activeObjectIds = new Set(objects.map((object) => object.id));
       const tasks = (
         await db.repository<Task>('qcTasks').findMany({ filter: { projectId } })
-      ).filter((task) => activeCheckIds.has(task.checkId));
-      // Applicability of archived objects stays stored but leaves the workspace with its object.
-      const activeObjectIds = new Set(objects.map((object) => object.id));
+      ).filter(
+        (task) =>
+          activeCheckIds.has(task.checkId) &&
+          (task.objectId === null || activeObjectIds.has(task.objectId)),
+      );
       const applicability = (
         await db
           .repository<Applicability>('qcApplicability')
@@ -205,7 +219,10 @@ export default [
         await db
           .repository<CheckExclusion>('qcCheckExclusions')
           .findMany({ filter: { projectId } })
-      ).filter((row) => activeCheckIds.has(row.checkId));
+      ).filter(
+        (row) =>
+          activeCheckIds.has(row.checkId) && activeObjectIds.has(row.objectId),
+      );
       return c.json({
         data: {
           exclusions,
@@ -388,9 +405,13 @@ export default [
             ? !(await conn.repository<Dimension>('qcDimensions').exists({
                 filter: { id: dimensionId, projectId, active: true },
               }))
-            : !(await conn
+            : // Applicability of an archived object stays stored, so the object itself must still be active.
+              !(await conn
                 .repository<Applicability>('qcApplicability')
-                .exists({ filter: { projectId, objectId, dimensionId } }))
+                .exists({ filter: { projectId, objectId, dimensionId } })) ||
+              !(await conn
+                .repository<TestObject>('qcObjects')
+                .exists({ filter: { id: objectId, projectId, active: true } }))
         )
           throw new HTTPException(400, { message: 'INVALID_APPLICABILITY' });
         const check = (
