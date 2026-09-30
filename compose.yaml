@@ -1,0 +1,28 @@
+name: nb3-quality-center
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:55490:5432'
+    environment:
+      POSTGRES_DB: quality_center
+      POSTGRES_USER: quality_center_app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U quality_center_app -d quality_center']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+secrets:
+  postgres_password:
+    file: ./.local/postgres-password
+
+volumes:
+  postgres_data:

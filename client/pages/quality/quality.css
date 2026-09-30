@@ -1,0 +1,146 @@
+/* Product palette uses paired semantic tokens; tables stay opaque in both themes. */
+.qc-shell {
+  --primary: #6044cf;
+  --primary-foreground: #ffffff;
+  --ring: #6044cf;
+  --background: #f6f7fc;
+  --foreground: #252740;
+  --card: #ffffff;
+  --card-foreground: #252740;
+  --muted: #eef0f8;
+  --muted-foreground: #63677d;
+  --border: #e0e3ef;
+  --input: #ced3e4;
+  --sidebar: #f0f1f8;
+  --sidebar-foreground: #252740;
+  --sidebar-border: #dddfee;
+  --sidebar-accent: #e6e7f4;
+  --sidebar-accent-foreground: #393356;
+  --qc-teal: #117867;
+  --qc-teal-soft: #e2f5ed;
+  --qc-glow: #ebe5ff;
+  --qc-shadow: 0 8px 26px -16px #52418e33;
+  --qc-warn: #9a5b00;
+  --qc-warn-soft: #fdf1dc;
+  --qc-bad: #b42336;
+  --qc-bad-soft: #fde8eb;
+}
+.dark .qc-shell {
+  --primary: #b8a4ff;
+  --primary-foreground: #21183e;
+  --ring: #b8a4ff;
+  --background: #141626;
+  --foreground: #ebeafa;
+  --card: #1d2033;
+  --card-foreground: #ebeafa;
+  --muted: #272b42;
+  --muted-foreground: #aeb3cc;
+  --border: #353b55;
+  --input: #49516f;
+  --sidebar: #191c2d;
+  --sidebar-foreground: #ebeafa;
+  --sidebar-border: #34394e;
+  --sidebar-accent: #292e47;
+  --sidebar-accent-foreground: #e5defc;
+  --qc-teal: #7cddc3;
+  --qc-teal-soft: #183b36;
+  --qc-glow: #2c2344;
+  --qc-shadow: 0 8px 26px -16px #00000066;
+  --qc-warn: #f3c170;
+  --qc-warn-soft: #3a2c14;
+  --qc-bad: #ff9aa7;
+  --qc-bad-soft: #43202a;
+}
+.qc-card {
+  box-shadow: var(--qc-shadow);
+}
+.qc-hero {
+  background: linear-gradient(
+    112deg,
+    var(--card) 0%,
+    var(--card) 40%,
+    var(--qc-glow) 100%
+  );
+}
+.qc-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    color-mix(in oklch, var(--primary) 16%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 18px 18px;
+  mask-image: linear-gradient(90deg, transparent 45%, #000 100%);
+}
+.qc-icon-tile {
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 10%, var(--card));
+}
+/* Tones pair a text color with its tint; every pair is used on card surfaces. */
+.qc-tone-good {
+  --qc-fg: var(--qc-teal);
+  --qc-bg: var(--qc-teal-soft);
+}
+.qc-tone-warn {
+  --qc-fg: var(--qc-warn);
+  --qc-bg: var(--qc-warn-soft);
+}
+.qc-tone-bad {
+  --qc-fg: var(--qc-bad);
+  --qc-bg: var(--qc-bad-soft);
+}
+.qc-tone-primary {
+  --qc-fg: var(--primary);
+  --qc-bg: color-mix(in oklch, var(--primary) 10%, var(--card));
+}
+.qc-tone-muted {
+  --qc-fg: var(--muted-foreground);
+  --qc-bg: var(--muted);
+}
+.qc-tone {
+  color: var(--qc-fg);
+  background: var(--qc-bg);
+  border-color: color-mix(in oklch, var(--qc-fg) 22%, transparent);
+}
+.qc-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--qc-fg);
+}
+.qc-matrix th:first-child,
+.qc-matrix td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--card);
+}
+.qc-lift {
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease;
+}
+.qc-lift:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklch, var(--primary) 30%, var(--border));
+}
+.qc-teal {
+  color: var(--qc-teal);
+  background: var(--qc-teal-soft);
+}
+.qc-shell :is(p, h1, h2, h3, h4, td, li) {
+  overflow-wrap: anywhere;
+}
+.qc-shell [data-slot='card'] {
+  border-radius: var(--radius-xl);
+}
+@media (prefers-reduced-motion: reduce) {
+  .qc-shell * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

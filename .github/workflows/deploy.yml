@@ -1,0 +1,51 @@
+# Builds the application on every push to main and deploys it to the NocoBase Hub at nb3.nocobase.com.
+# Needs the repository variables HUB_URL and HUB_APP_ID and the secret HUB_API_KEY (a Hub publishing key bound to
+# this App with upload-release and deploy). Without the key the job only reports that deployment is not configured.
+# The Hub keeps the App's runtime configuration: deployments omit --config and reuse it.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hub
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HUB_URL: ${{ vars.HUB_URL }}
+      HUB_APP_ID: ${{ vars.HUB_APP_ID }}
+      HUB_API_KEY: ${{ secrets.HUB_API_KEY }}
+    steps:
+      - name: Check deployment settings
+        id: settings
+        run: |
+          if [ -z "$HUB_URL" ] || [ -z "$HUB_APP_ID" ] || [ -z "$HUB_API_KEY" ]; then
+            echo "::notice::Hub deployment is not configured (HUB_URL, HUB_APP_ID, HUB_API_KEY); skipping."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.ready == 'true'
+      - uses: pnpm/action-setup@v4
+        if: steps.settings.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.settings.outputs.ready == 'true'
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        if: steps.settings.outputs.ready == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Build for the Hub (linux x64, Node 24)
+        if: steps.settings.outputs.ready == 'true'
+        run: pnpm build --tar --target linux-x64 --node-version 24
+      - name: Deploy
+        if: steps.settings.outputs.ready == 'true'
+        run: pnpm nocobase hub deploy --json
