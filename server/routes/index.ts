@@ -1,4 +1,5 @@
 import { importRun, runImportSchema } from '../quality/runs.js';
+import { exportQualityData } from '../quality/export.js';
 import { notificationServiceToken } from '@nocobase/app-plugin-notification';
 import type { Application } from '@nocobase/app-server/application';
 import { randomUUID } from 'node:crypto';
@@ -124,6 +125,15 @@ export default [
       console.error('Quality request failed', error);
       return c.json({ error: { code: 'REQUEST_FAILED' } }, 500);
     });
+    // Full backup of every quality table, archived records included; the only copy of the data lives online.
+    router.get('/export', async (c) =>
+      c.json({
+        data: await exportQualityData(
+          db,
+          app.container.resolve(userAdministrationServiceToken),
+        ),
+      }),
+    );
     router.get('/projects', async (c) =>
       c.json({
         data: await db
