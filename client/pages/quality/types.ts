@@ -25,6 +25,13 @@ export interface TestObject {
   // Left out of full runs while the feature is still being developed; definitions and history stay.
   testingPaused: boolean;
   pausedReason: string | null;
+  // Skills, packages and documentation pages that belong to the object.
+  materials: Material[] | null;
+}
+export type MaterialType = 'skill' | 'package' | 'doc' | 'other';
+export interface Material {
+  type: MaterialType;
+  ref: string;
 }
 export type CheckScope = 'object' | 'shared';
 export interface Check {
@@ -39,6 +46,8 @@ export interface Check {
   active: boolean;
   fixMode: FixMode;
   assigneeId: string | null;
+  // The problem, PR or report this Check guards against.
+  source: string | null;
 }
 export interface Standard {
   id: number;
@@ -51,22 +60,11 @@ export interface Standard {
   evidence: string;
   humanReview: boolean;
   published: boolean;
+  judgeMode: JudgeMode;
+  command: string | null;
 }
-export interface Task {
-  id: number;
-  projectId: number;
-  checkId: number;
-  // The object this run checked; for a shared Check it selects one inheriting object.
-  objectId: number | null;
-  standardId: number;
-  revision: string;
-  environment: string;
-  executionStatus: string;
-  conclusion: string;
-  evidence: string;
-  requestKey: string;
-  createdAt: string;
-}
+// Who decides a Check's conclusion: a script, the executing Agent, a separate session, or a person.
+export type JudgeMode = 'script' | 'agent' | 'session' | 'human';
 // An object that turned off one shared Check; absence means the Check applies.
 export interface CheckExclusion {
   id: number;
@@ -88,7 +86,6 @@ export interface Detail {
   objects: TestObject[];
   checks: Check[];
   standards: Standard[];
-  tasks: Task[];
   applicability: Applicability[];
   exclusions: CheckExclusion[];
 }
@@ -122,8 +119,25 @@ export interface Run {
   } | null;
   steps?: RunStep[] | null;
   importedAt: string;
+  // Started runs know their Check × object pairs; imported runs have none.
+  plan?: PlanItem[] | null;
+  deadlineAt?: string | null;
+  triggeredBy?: string | null;
+  externalTaskId?: string | null;
+  externalTaskKey?: string | null;
+  externalTaskUrl?: string | null;
+  dispatchError?: string | null;
+  // running, completed, or overdue for a running run past its deadline.
+  displayStatus: string;
+}
+export interface PlanItem {
+  checkId: number;
+  objectId: number;
+  standardId: number;
 }
 export interface RunSummary extends Run {
+  expected: number;
+  pendingReview: number;
   passed: number;
   failed: number;
   openItems: number;
@@ -140,6 +154,11 @@ export interface Result {
   evidence: string | null;
   evidencePath: string | null;
   prUrl: string | null;
+  reviewStatus?: 'pending' | 'confirmed' | null;
+  reportedConclusion?: 'passed' | 'failed' | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  reviewNote?: string | null;
 }
 export interface WorkItem {
   id: number;
@@ -158,7 +177,7 @@ export interface WorkItem {
   prState: 'open' | 'merged' | 'closed' | null;
   prSyncedAt: string | null;
   createdBy: string | null;
-  kind: 'pr_review' | 'manual';
+  kind: 'pr_review' | 'manual' | 'review';
   title: string;
   assigneeId: string;
   prUrl: string | null;

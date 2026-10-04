@@ -1,13 +1,6 @@
 import { ApiClientError, useApiClient } from '@nocobase/app-client';
 import { useTranslation } from '@nocobase/i18n/client';
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-  type FormEvent,
-} from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   ArrowLeft,
@@ -15,6 +8,8 @@ import {
   CirclePause,
   History,
   FolderOpen,
+  Link2,
+  Pencil,
   Layers3,
   Plus,
   Search,
@@ -37,8 +32,6 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -49,14 +42,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Empty as EmptyRoot,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  EmptyDescription,
-  EmptyContent,
-} from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -72,6 +57,7 @@ import type {
   Check,
   CheckScope,
   Detail,
+  JudgeMode,
   Project,
   Result,
   RunDetail,
@@ -88,6 +74,8 @@ import {
   isExcluded,
 } from './model.js';
 import { Overview } from './overview.js';
+import { Choice, Empty, Field, FormFrame } from './form.js';
+import { ArchivedCard, CheckEditForm, ObjectEditForm } from './definitions.js';
 import { ReportText, SectionTitle, StatusBadge } from './ui.js';
 import { useSubmission } from './use-submission.js';
 import {
@@ -99,108 +87,6 @@ import {
   WorkItemsView,
 } from './runs.js';
 import { useLatestRun, useUsers } from './use-quality-data.js';
-
-function Choice({
-  label,
-  value,
-  items,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  items: { value: string; label: string }[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className='space-y-2'>
-      <Label>{label}</Label>
-      <Select
-        value={value}
-        items={items}
-        onValueChange={(v) => {
-          if (v !== null) onChange(v);
-        }}
-      >
-        <SelectTrigger className='w-full bg-card' aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {items.map((item) => (
-            <SelectItem key={item.value} value={item.value}>
-              {item.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-function Field({
-  name,
-  label,
-  defaultValue = '',
-  multiline = false,
-  required = true,
-  maxLength = 10000,
-}: {
-  name: string;
-  label: string;
-  defaultValue?: string;
-  multiline?: boolean;
-  required?: boolean;
-  maxLength?: number;
-}) {
-  return (
-    <div className='space-y-2'>
-      <Label htmlFor={name}>
-        {label}
-        {required && <span aria-hidden='true'> *</span>}
-      </Label>
-      {multiline ? (
-        <Textarea
-          id={name}
-          name={name}
-          defaultValue={defaultValue}
-          required={required}
-          maxLength={maxLength}
-          rows={4}
-          className='bg-background'
-        />
-      ) : (
-        <Input
-          id={name}
-          name={name}
-          defaultValue={defaultValue}
-          required={required}
-          maxLength={maxLength}
-          className='bg-background'
-        />
-      )}
-    </div>
-  );
-}
-function Empty({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <EmptyRoot className='py-12'>
-      <EmptyHeader>
-        <EmptyMedia variant='icon'>
-          <FolderOpen />
-        </EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description}</EmptyDescription>
-      </EmptyHeader>
-      {action && <EmptyContent>{action}</EmptyContent>}
-    </EmptyRoot>
-  );
-}
 
 export default function QualityPage() {
   const api = useApiClient();
@@ -371,6 +257,10 @@ export default function QualityPage() {
       </PageContainer>
     );
   const check = detail.checks.find((c) => String(c.id) === record);
+  const editingObject =
+    view === 'edit-object'
+      ? detail.objects.find((o) => String(o.id) === record)
+      : undefined;
   const versions = check
     ? detail.standards
         .filter((s) => s.checkId === check.id)
@@ -379,7 +269,10 @@ export default function QualityPage() {
   const standard =
     versions.find((s) => String(s.id) === params.get('standard')) ||
     versions[0];
-  const title = t('qc.' + (view === 'standard' ? 'standard' : view));
+  const title = t(
+    'qc.' +
+      (view === 'standard' ? 'standard' : view === 'tasks' ? 'todo' : view),
+  );
   const primary =
     view === 'checks' ? (
       <Button
@@ -431,7 +324,13 @@ export default function QualityPage() {
         </div>
       )}
       {view === 'overview' && (
-        <Overview detail={detail} go={go} revision={revision} />
+        <Overview
+          detail={detail}
+          go={go}
+          revision={revision}
+          onChanged={refresh}
+          onNotice={setNotice}
+        />
       )}
       {view === 'coverage' && (
         <Coverage
@@ -451,6 +350,7 @@ export default function QualityPage() {
             })
           }
           onCreate={() => go('new-object')}
+          onChanged={refresh}
         />
       )}
       {view === 'runs' && (
@@ -463,6 +363,8 @@ export default function QualityPage() {
           runId={record}
           go={go}
           revision={revision}
+          onChanged={refresh}
+          initialOnlyFailed={params.get('failed') === '1'}
           initialCell={
             params.get('object') && params.get('dimension')
               ? {
@@ -473,21 +375,24 @@ export default function QualityPage() {
           }
         />
       )}
+      {/* "tasks" is the former name of everyone's to-dos; old links still land on the merged page. */}
       {(view === 'todo' || view === 'tasks') && (
         <WorkItemsView
-          key={view}
+          key={view + (params.get('scope') ?? '')}
           detail={detail}
           go={go}
           revision={revision}
           onChanged={refresh}
-          defaultScope={view === 'todo' ? 'mine' : 'all'}
+          defaultScope={
+            view === 'tasks' || params.get('scope') === 'all' ? 'all' : 'mine'
+          }
         />
       )}
       {view === 'new-work-item' && (
         <WorkItemForm
           detail={detail}
-          onCancel={() => go('tasks')}
-          onSaved={() => saved(t('qc.saved'), 'tasks')}
+          onCancel={() => go('todo')}
+          onSaved={() => saved(t('qc.saved'), 'todo', { scope: 'all' })}
         />
       )}
       {view === 'checks' && (
@@ -560,13 +465,35 @@ export default function QualityPage() {
                                 : 'bg-background')
                             }
                           >
-                            <span
-                              className={
-                                'min-w-0 truncate text-sm ' +
-                                (o.testingPaused ? 'text-muted-foreground' : '')
-                              }
-                            >
-                              {o.name}
+                            <span className='flex min-w-0 items-center gap-1'>
+                              <span
+                                className={
+                                  'min-w-0 truncate text-sm ' +
+                                  (o.testingPaused
+                                    ? 'text-muted-foreground'
+                                    : '')
+                                }
+                                title={(o.materials ?? [])
+                                  .map((m) => m.ref)
+                                  .join('\n')}
+                              >
+                                {o.name}
+                              </span>
+                              {!!o.materials?.length && (
+                                <Badge variant='secondary'>
+                                  {o.materials.length}
+                                </Badge>
+                              )}
+                              <Button
+                                variant='ghost'
+                                size='icon-sm'
+                                aria-label={t('qc.editObject') + ' ' + o.name}
+                                onClick={() =>
+                                  go('edit-object', { record: String(o.id) })
+                                }
+                              >
+                                <Pencil />
+                              </Button>
                             </span>
                             <ObjectTestingSwitch
                               detail={detail}
@@ -627,6 +554,11 @@ export default function QualityPage() {
               </ol>
             </CardContent>
           </Card>
+          <ArchivedCard
+            detail={detail}
+            revision={revision}
+            onRestored={() => saved(t('qc.restored'), 'configuration')}
+          />
         </div>
       )}
       {(view === 'new-object' || view === 'new-dimension') && (
@@ -658,6 +590,26 @@ export default function QualityPage() {
             }
           />
         )}
+      {view === 'edit-check' && check && (
+        <CheckEditForm
+          key={check.id}
+          detail={detail}
+          check={check}
+          onCancel={() => go('standard', { record: String(check.id) })}
+          onSaved={() =>
+            saved(t('qc.saved'), 'standard', { record: String(check.id) })
+          }
+        />
+      )}
+      {view === 'edit-object' && editingObject && (
+        <ObjectEditForm
+          key={editingObject.id}
+          detail={detail}
+          object={editingObject}
+          onCancel={() => go('configuration')}
+          onSaved={() => saved(t('qc.saved'), 'configuration')}
+        />
+      )}
       {view === 'standard' && check && standard && (
         <>
           <div className='flex flex-wrap gap-3'>
@@ -671,6 +623,12 @@ export default function QualityPage() {
                 check={check}
                 onDeleted={() => saved(t('qc.deleted'), 'checks')}
               />
+              <Button
+                variant='outline'
+                onClick={() => go('edit-check', { record: String(check.id) })}
+              >
+                {t('qc.editCheck')}
+              </Button>
               <Button
                 variant='outline'
                 onClick={() =>
@@ -707,6 +665,14 @@ export default function QualityPage() {
                             ? 'qc.humanRequired'
                             : 'qc.humanOptional',
                         )}
+                      </Badge>
+                      <Badge
+                        variant='outline'
+                        className='qc-tone qc-tone-muted'
+                        title={t('qc.judgeHint.' + standard.judgeMode)}
+                      >
+                        {t('qc.judgeLabel')} ·{' '}
+                        {t('qc.judgeMode.' + standard.judgeMode)}
                       </Badge>
                     </div>
                     <h2 className='text-2xl font-semibold tracking-tight'>
@@ -745,6 +711,21 @@ export default function QualityPage() {
                       </div>
                     </section>
                   ))}
+                  {standard.command && (
+                    <section className='grid gap-3 p-6 md:grid-cols-[2rem_1fr]'>
+                      <span className='qc-icon-tile flex size-7 items-center justify-center rounded-lg font-mono text-xs'>
+                        {standardFields.length + 1}
+                      </span>
+                      <div className='min-w-0'>
+                        <h3 className='mb-2 font-semibold'>
+                          {t('qc.command')}
+                        </h3>
+                        <code className='block rounded-lg bg-muted px-3 py-2 font-mono text-sm break-all'>
+                          {standard.command}
+                        </code>
+                      </div>
+                    </section>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -763,6 +744,24 @@ export default function QualityPage() {
                   <p className='text-xs leading-6 text-muted-foreground'>
                     {t('qc.versionNote')}
                   </p>
+                </CardContent>
+              </Card>
+              <Card className='qc-card'>
+                <CardContent className='space-y-3 p-5'>
+                  <SectionTitle
+                    icon={<Link2 />}
+                    title={t('qc.source')}
+                    description={t('qc.sourceHint')}
+                  />
+                  {check.source ? (
+                    <div className='text-sm text-muted-foreground'>
+                      <ReportText text={check.source} />
+                    </div>
+                  ) : (
+                    <p className='text-sm text-muted-foreground'>
+                      {t('qc.noSource')}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
               <CheckSettings
@@ -817,12 +816,14 @@ function Coverage({
   onCell,
   onCreate,
   onRun,
+  onChanged,
   revision,
 }: {
   detail: Detail;
   onCell: (o: number, d: number) => void;
   onCreate: () => void;
   onRun: (runId: number, objectId: number, dimensionId: number) => void;
+  onChanged: () => void;
   revision: number;
 }) {
   const { t } = useTranslation();
@@ -912,17 +913,28 @@ function Coverage({
                     const withChecks = own.filter(
                       (a) => effectiveCount(detail, a.objectId, d.id) > 0,
                     ).length;
+                    // A dimension without any Check yet stays visible but recedes, so it does not read as a gap in results.
                     return (
-                      <TableHead key={d.id} className='min-w-36'>
+                      <TableHead
+                        key={d.id}
+                        className={
+                          'min-w-36 ' +
+                          (withChecks
+                            ? ''
+                            : 'font-normal text-muted-foreground')
+                        }
+                      >
                         {d.name}
                         <span
                           aria-hidden='true'
                           className='mt-0.5 block text-[11px] font-normal text-muted-foreground'
                         >
-                          {t('qc.objectsWithChecks', {
-                            done: withChecks,
-                            total: own.length,
-                          })}
+                          {withChecks
+                            ? t('qc.objectsWithChecks', {
+                                done: withChecks,
+                                total: own.length,
+                              })
+                            : t('qc.noDimensionChecks')}
                         </span>
                       </TableHead>
                     );
@@ -964,6 +976,7 @@ function Coverage({
                           <TableCell key={d.id} className='min-w-36 p-1.5'>
                             <MatrixCell
                               detail={detail}
+                              paused={o.testingPaused}
                               objectId={o.id}
                               dimensionId={d.id}
                               latest={latest}
@@ -1003,6 +1016,7 @@ function Coverage({
               ? () => onRun(latest.run.id, cell.o, cell.d)
               : undefined
           }
+          onChanged={onChanged}
         />
       </CardContent>
     </Card>
@@ -1010,6 +1024,7 @@ function Coverage({
 }
 function MatrixCell({
   detail,
+  paused,
   objectId,
   dimensionId,
   latest,
@@ -1017,6 +1032,7 @@ function MatrixCell({
   onCell,
 }: {
   detail: Detail;
+  paused: boolean;
   objectId: number;
   dimensionId: number;
   latest?: RunDetail;
@@ -1038,6 +1054,14 @@ function MatrixCell({
   });
   const base =
     'group flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring ';
+  // A paused object is left out of runs, so an older score would read as current; show no score for it.
+  if (paused && applicable)
+    return (
+      <span className='block px-3 text-center text-xs text-muted-foreground/60'>
+        <span aria-hidden='true'>—</span>
+        <span className='sr-only'>{t('qc.paused')}</span>
+      </span>
+    );
   if (scored && latest)
     return (
       <button
@@ -1045,11 +1069,13 @@ function MatrixCell({
         className={
           base +
           'qc-tone ' +
-          (!scored.complete
-            ? 'qc-tone-muted'
-            : scored.passed === scored.total
-              ? 'qc-tone-good'
-              : 'qc-tone-bad')
+          (scored.total > scored.passed
+            ? 'qc-tone-bad'
+            : scored.pending
+              ? 'qc-tone-warn'
+              : !scored.complete
+                ? 'qc-tone-muted'
+                : 'qc-tone-good')
         }
         title={latest.run.key}
         onClick={onScore}
@@ -1562,53 +1588,6 @@ function DeleteCheck({
     </AlertDialog>
   );
 }
-function FormFrame({
-  title,
-  onCancel,
-  busy,
-  error,
-  children,
-  onSubmit,
-  disabled = false,
-}: {
-  title: string;
-  onCancel: () => void;
-  busy: boolean;
-  disabled?: boolean;
-  error: string;
-  children: ReactNode;
-  onSubmit: (e: FormEvent<HTMLFormElement>) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <Card className='qc-card mx-auto max-w-3xl'>
-      <CardContent className='p-6'>
-        <form onSubmit={onSubmit} className='space-y-6'>
-          <h2 className='text-lg font-semibold'>{title}</h2>
-          {error && (
-            <Alert variant='destructive'>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {children}
-          <div className='flex justify-end gap-3 border-t pt-5'>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={busy}
-              onClick={onCancel}
-            >
-              {t('qc.cancel')}
-            </Button>
-            <Button type='submit' disabled={busy || disabled}>
-              {t(busy ? 'qc.saving' : 'qc.save')}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
-  );
-}
 function ProjectForm({
   onCancel,
   onSaved,
@@ -1889,6 +1868,10 @@ function StandardForm({
     ),
   );
   const [humanReview, setHumanReview] = useState(standard?.humanReview ?? true);
+  const [judgeMode, setJudgeMode] = useState<JudgeMode>(
+    standard?.judgeMode ?? 'agent',
+  );
+  const [judgeError, setJudgeError] = useState('');
   // Arriving from one matrix cell means an object-specific Check; otherwise start with the shared default.
   const [scope, setScope] = useState<CheckScope>(
     initialObjectId ? 'object' : 'shared',
@@ -1906,12 +1889,20 @@ function StandardForm({
       disabled={
         !check && (shared ? !sharedDimensionId : !objectId || !dimensionId)
       }
+      extraError={judgeError}
       onCancel={onCancel}
       busy={busy}
       error={error}
       onSubmit={(e) => {
         e.preventDefault();
         const values = Object.fromEntries(new FormData(e.currentTarget));
+        const command =
+          typeof values.command === 'string' ? values.command.trim() : '';
+        if (judgeMode === 'script' && !command) {
+          setJudgeError(t('qc.commandRequired'));
+          return;
+        }
+        setJudgeError('');
         const body = {
           definition: values.definition,
           preconditions: values.preconditions,
@@ -1919,6 +1910,8 @@ function StandardForm({
           passCriteria: values.passCriteria,
           evidence: values.evidence,
           humanReview,
+          judgeMode,
+          command: command || null,
         };
         if (check && standard)
           void submit(
@@ -1937,12 +1930,20 @@ function StandardForm({
               ? {
                   ...body,
                   name: values.name,
+                  source:
+                    (typeof values.source === 'string'
+                      ? values.source.trim()
+                      : '') || null,
                   scope,
                   dimensionId: Number(sharedDimensionId),
                 }
               : {
                   ...body,
                   name: values.name,
+                  source:
+                    (typeof values.source === 'string'
+                      ? values.source.trim()
+                      : '') || null,
                   scope,
                   objectId: Number(objectId),
                   dimensionId: Number(dimensionId),
@@ -1984,6 +1985,17 @@ function StandardForm({
             </RadioGroup>
           </fieldset>
           <Field name='name' label={t('qc.checkName')} maxLength={120} />
+          <div className='space-y-2'>
+            <Field
+              name='source'
+              label={t('qc.source')}
+              required={false}
+              multiline
+            />
+            <p className='text-xs leading-5 text-muted-foreground'>
+              {t('qc.sourceHint')}
+            </p>
+          </div>
           {shared ? (
             <div className='space-y-3'>
               <Choice
@@ -2059,6 +2071,49 @@ function StandardForm({
           defaultValue={standard?.[field] || ''}
         />
       ))}
+      <fieldset className='space-y-3'>
+        <legend className='mb-3 font-medium'>{t('qc.judgeLabel')}</legend>
+        <RadioGroup
+          value={judgeMode}
+          onValueChange={(v) => setJudgeMode(v as JudgeMode)}
+          className='grid gap-3 sm:grid-cols-2'
+        >
+          {(['script', 'session', 'agent', 'human'] as const).map((v) => (
+            <label
+              key={v}
+              className={
+                'flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ' +
+                (judgeMode === v
+                  ? 'border-primary/50 bg-primary/5'
+                  : 'hover:bg-muted/50')
+              }
+            >
+              <RadioGroupItem value={v} className='mt-0.5' />
+              <span>
+                <span className='block font-medium'>
+                  {t('qc.judgeMode.' + v)}
+                </span>
+                <span className='mt-1 block text-xs leading-5 text-muted-foreground'>
+                  {t('qc.judgeHint.' + v)}
+                </span>
+              </span>
+            </label>
+          ))}
+        </RadioGroup>
+        {judgeMode === 'script' && (
+          <div className='space-y-2'>
+            <Field
+              name='command'
+              label={t('qc.command')}
+              defaultValue={standard?.command ?? ''}
+              maxLength={2000}
+            />
+            <p className='text-xs text-muted-foreground'>
+              {t('qc.commandHint')}
+            </p>
+          </div>
+        )}
+      </fieldset>
       <label className='flex items-center gap-3 text-sm'>
         <Checkbox checked={humanReview} onCheckedChange={setHumanReview} />
         {t('qc.humanRequired')}

@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   Grid2X2,
   BookOpen,
-  Workflow,
   SlidersHorizontal,
   Plus,
   Layers3,
@@ -145,13 +144,13 @@ export function QualityNavigation({ onNavigate }: { onNavigate: () => void }) {
         {t('qc.workspace')}
       </p>
       <div className='space-y-1'>
+        {/* "Tasks" and "My to-dos" were the same page; one to-do entry now switches between mine and everyone's. */}
         {[
           ['overview', LayoutDashboard],
-          ['coverage', Grid2X2],
-          ['checks', BookOpen],
-          ['runs', History],
           ['todo', Inbox],
-          ['tasks', Workflow],
+          ['coverage', Grid2X2],
+          ['runs', History],
+          ['checks', BookOpen],
           ['configuration', SlidersHorizontal],
         ].map(([key, Icon]) => {
           const slug = String(key);
@@ -166,7 +165,9 @@ export function QualityNavigation({ onNavigate }: { onNavigate: () => void }) {
               variant='ghost'
               className={
                 'h-11 w-full justify-start rounded-xl px-3 ' +
-                (view === slug
+                (view === slug ||
+                (slug === 'todo' && view === 'tasks') ||
+                (slug === 'runs' && view === 'run')
                   ? 'bg-primary/10 font-semibold text-primary hover:bg-primary/15'
                   : 'text-muted-foreground')
               }

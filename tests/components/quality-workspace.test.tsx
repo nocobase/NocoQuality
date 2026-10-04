@@ -50,6 +50,7 @@ const detail: Detail = {
       active: true,
       testingPaused: false,
       pausedReason: null,
+      materials: null,
     },
     {
       id: 13,
@@ -61,6 +62,7 @@ const detail: Detail = {
       active: true,
       testingPaused: false,
       pausedReason: null,
+      materials: null,
     },
   ],
   checks: [
@@ -75,6 +77,7 @@ const detail: Detail = {
       key: 'payment',
       name: '充值消费',
       active: true,
+      source: null,
     },
   ],
   standards: [
@@ -89,9 +92,10 @@ const detail: Detail = {
       evidence: '脱敏流水',
       humanReview: true,
       published: true,
+      judgeMode: 'agent',
+      command: null,
     },
   ],
-  tasks: [],
   applicability: [{ id: 16, projectId: 10, objectId: 12, dimensionId: 11 }],
   exclusions: [],
 };
@@ -201,7 +205,7 @@ describe('quality workspace', () => {
     expect(await screen.findByText('qc.loadError')).toBeVisible();
     fail = false;
     await user.click(screen.getByRole('button', { name: 'qc.retry' }));
-    expect(await screen.findByText('qc.coverageRate')).toBeVisible();
+    expect(await screen.findByText('qc.now.noRunTitle')).toBeVisible();
   });
   it('lets every object inherit a dimension-wide Check and turns it off for one object', async () => {
     const withShared = structuredClone(detail);
@@ -480,6 +484,150 @@ describe('quality workspace', () => {
             problem: 'problem 内容',
             prUrl: null,
           }),
+        }),
+      ),
+    );
+  });
+  it('leads with the current run: progress, what failed, and starting the next run', async () => {
+    const run = {
+      id: 50,
+      projectId: 10,
+      key: '2026-10-04-01',
+      status: 'running',
+      displayStatus: 'running',
+      executor: null,
+      startedAt: '2026-10-04T10:00:00Z',
+      finishedAt: null,
+      environment: null,
+      importedAt: '2026-10-04T10:00:00Z',
+      plan: [
+        { checkId: 14, objectId: 12, standardId: 15 },
+        { checkId: 14, objectId: 13, standardId: 15 },
+      ],
+      deadlineAt: '2026-10-04T22:00:00Z',
+      externalTaskId: null,
+      dispatchError: null,
+    };
+    const results = [
+      {
+        id: 51,
+        runId: 50,
+        checkId: 14,
+        standardId: 15,
+        objectId: 12,
+        conclusion: 'failed',
+        note: '余额与流水不一致',
+        evidence: '流水 3 条',
+        evidencePath: null,
+        prUrl: null,
+        reviewStatus: null,
+      },
+    ];
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => {
+        if (method === 'POST')
+          return { data: { ...run, id: 60, key: '2026-10-04-02' } };
+        return {
+          data:
+            path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/execution'
+                ? { nocoproject: false, deadlineHours: 12 }
+                : path.endsWith('/runs')
+                  ? [
+                      {
+                        ...run,
+                        expected: 2,
+                        pendingReview: 0,
+                        passed: 0,
+                        failed: 1,
+                        openItems: 0,
+                        prs: 0,
+                      },
+                    ]
+                  : path.endsWith('/runs/50')
+                    ? { run, results, workItems: [] }
+                    : path.includes('/work-items') || path === 'quality/users'
+                      ? []
+                      : structuredClone(detail),
+        };
+      },
+    );
+    show('overview');
+    expect(await screen.findByText('2026-10-04-01')).toBeVisible();
+    expect(screen.getByText('qc.runProgressShort')).toBeVisible();
+    expect(screen.getByText('充值消费 · 饭卡')).toBeVisible();
+    expect(screen.getByText('余额与流水不一致')).toBeVisible();
+    // Without NocoProject the page shows the commands that start the executor by hand.
+    expect(await screen.findByText(/run-plan\.mjs 10 50/)).toBeVisible();
+    // A run still within its deadline blocks the next one.
+    expect(screen.getByRole('button', { name: /qc.startRun/ })).toBeDisabled();
+  });
+  it('asks a person to confirm a result whose standard requires review', async () => {
+    const run = {
+      id: 70,
+      projectId: 10,
+      key: '2026-10-04-03',
+      status: 'completed',
+      displayStatus: 'completed',
+      executor: 'local',
+      startedAt: '2026-10-04T10:00:00Z',
+      finishedAt: '2026-10-04T11:00:00Z',
+      environment: null,
+      importedAt: '2026-10-04T10:00:00Z',
+      plan: [{ checkId: 14, objectId: 12, standardId: 15 }],
+    };
+    const results = [
+      {
+        id: 71,
+        runId: 70,
+        checkId: 14,
+        standardId: 15,
+        objectId: 12,
+        conclusion: 'failed',
+        reportedConclusion: 'failed',
+        reviewStatus: 'pending',
+        note: '页面只有标题',
+        evidence: '正文 0 字',
+        evidencePath: null,
+        prUrl: null,
+      },
+    ];
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? results[0]
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path.endsWith('/runs/70')
+                ? { run, results, workItems: [] }
+                : path.endsWith('/runs') ||
+                    path === 'quality/users' ||
+                    path.includes('/work-items')
+                  ? []
+                  : path === 'quality/execution'
+                    ? { nocoproject: false }
+                    : structuredClone(detail),
+      }),
+    );
+    const user = userEvent.setup();
+    show('run&record=70');
+    await user.click(
+      await screen.findByRole('button', { name: /qc.runProgress/ }),
+    );
+    expect(await screen.findByText('qc.reviewHint')).toBeVisible();
+    await user.type(
+      screen.getByRole('textbox', { name: 'qc.reviewNoteLabel' }),
+      '确认是占位页',
+    );
+    await user.click(screen.getByRole('button', { name: 'qc.confirmFailed' }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/runs/70/results/71/review',
+          method: 'POST',
+          json: { conclusion: 'failed', note: '确认是占位页' },
         }),
       ),
     );

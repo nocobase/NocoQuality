@@ -6,10 +6,11 @@ import {
 } from '../../client/theme/theme-preferences';
 
 describe('application appearance storage', () => {
-  it('lists Compact first as the default preset', () => {
-    expect(themePresets[0].id).toBe('compact');
+  // NocoQuality registers its own palette first, ahead of the template's Compact preset.
+  it('lists NocoQuality first as the default preset', () => {
+    expect(themePresets[0].id).toBe('nocoquality');
   });
-  it('restores Compact when the saved Ant Design preset is removed', () => {
+  it('restores the default when the saved Ant Design preset is removed', () => {
     const keys = themeStorageKeys('/crm/');
     localStorage.setItem(keys.preset, 'ant-design');
     localStorage.setItem(keys.mode, 'light');
@@ -17,7 +18,7 @@ describe('application appearance storage', () => {
       '/crm/',
       themePresets.map(({ id }) => id),
     );
-    expect(document.documentElement.dataset.theme).toBe('compact');
+    expect(document.documentElement.dataset.theme).toBe('nocoquality');
     expect(document.documentElement).toHaveClass('light');
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -57,7 +58,10 @@ describe('application appearance storage', () => {
       '/erp/',
       themePresets.map(({ id }) => id),
     );
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
     expect(document.documentElement).toHaveClass('dark');
   });
 
@@ -68,7 +72,10 @@ describe('application appearance storage', () => {
       '/crm/',
       themePresets.map(({ id }) => id),
     );
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
     expect(document.documentElement).toHaveClass('dark');
     const spy = vi
       .spyOn(Storage.prototype, 'getItem')

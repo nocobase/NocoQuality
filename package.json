@@ -1,6 +1,6 @@
 {
   "name": "quality-center",
-  "displayName": "quality-center",
+  "displayName": "NocoQuality",
   "version": "1.0.0-beta.50",
   "type": "module",
   "prettier": "@nocobase/dev-config/prettier",
