@@ -41,6 +41,13 @@ export interface TestObject {
   // Left out of full runs while the feature is still being developed; definitions and history stay.
   testingPaused: boolean;
   pausedReason: string | null;
+  // Skills, packages and documentation pages that belong to the object.
+  materials: Material[] | null;
+}
+export type MaterialType = 'skill' | 'package' | 'doc' | 'other';
+export interface Material {
+  type: MaterialType;
+  ref: string;
 }
 export type CheckScope = 'object' | 'shared';
 export interface Check {
@@ -56,6 +63,8 @@ export interface Check {
   fixMode: FixMode;
   // Reviews the PR, or handles the not-passed result by hand.
   assigneeId: string | null;
+  // The problem, PR or report this Check guards against.
+  source: string | null;
 }
 export interface Standard {
   id: number;
@@ -68,22 +77,12 @@ export interface Standard {
   evidence: string;
   humanReview: boolean;
   published: boolean;
+  // Who decides the conclusion: a script, the executing Agent, a separate session, or a person.
+  judgeMode: JudgeMode;
+  // The script a script-judged Check runs; empty for the other modes.
+  command: string | null;
 }
-export interface Task {
-  id: number;
-  projectId: number;
-  checkId: number;
-  // The object this run checked; for a shared Check it selects one inheriting object.
-  objectId: number | null;
-  standardId: number;
-  revision: string;
-  environment: string;
-  executionStatus: string;
-  conclusion: string;
-  evidence: string;
-  requestKey: string;
-  createdAt: string;
-}
+export type JudgeMode = 'script' | 'agent' | 'session' | 'human';
 // An object that turned off one shared Check; absence means the Check applies.
 export interface CheckExclusion {
   id: number;
@@ -113,6 +112,19 @@ export interface Run {
   steps: unknown;
   importedAt: string;
   importedBy: string | null;
+  plan: PlanItem[] | null;
+  deadlineAt: string | null;
+  triggeredBy: string | null;
+  externalTaskId: string | null;
+  externalTaskKey: string | null;
+  externalTaskUrl: string | null;
+  dispatchError: string | null;
+}
+// One Check × object pair a started run must report, with the standard version it is judged by.
+export interface PlanItem {
+  checkId: number;
+  objectId: number;
+  standardId: number;
 }
 export interface Result {
   id: number;
@@ -126,6 +138,13 @@ export interface Result {
   evidence: string | null;
   evidencePath: string | null;
   prUrl: string | null;
+  // pending until a person confirms a result whose standard requires review; null when none is required.
+  reviewStatus: 'pending' | 'confirmed' | null;
+  reportedConclusion: 'passed' | 'failed' | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  reportedAt: string | null;
 }
 export interface WorkItem {
   id: number;
@@ -145,7 +164,7 @@ export interface WorkItem {
   prState: 'open' | 'merged' | 'closed' | null;
   prSyncedAt: string | null;
   createdBy: string | null;
-  kind: 'pr_review' | 'manual';
+  kind: 'pr_review' | 'manual' | 'review';
   title: string;
   assigneeId: string;
   prUrl: string | null;

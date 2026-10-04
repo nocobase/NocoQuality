@@ -1,4 +1,4 @@
-import type { Check, Detail, Result } from './types.js';
+import type { Check, Detail, Result, Run } from './types.js';
 
 export type Tone = 'good' | 'warn' | 'bad' | 'muted' | 'primary';
 
@@ -65,7 +65,8 @@ export function testedApplicability(detail: Detail) {
   return activeApplicability(detail).filter((a) => !paused.has(a.objectId));
 }
 
-// A cell's score from one run's results: 10 × passed ÷ enabled Checks, only once every enabled Check has a result.
+// A cell's score from one run's results: 10 × passed ÷ enabled Checks, only once every enabled Check has a
+// result. A result waiting for human review is not a conclusion yet, so it keeps the cell incomplete.
 export function cellScore(
   detail: Detail,
   results: readonly Result[],
@@ -81,13 +82,60 @@ export function cellScore(
   );
   const expected = effectiveCount(detail, objectId, dimensionId);
   if (!rows.length || !expected) return null;
-  const passed = rows.filter((r) => r.conclusion === 'passed').length;
+  const concluded = rows.filter((r) => r.reviewStatus !== 'pending');
+  const passed = concluded.filter((r) => r.conclusion === 'passed').length;
   return {
     rows,
     passed,
-    total: rows.length,
+    total: concluded.length,
+    pending: rows.length - concluded.length,
     expected,
-    complete: rows.length >= expected,
-    score: Math.round((passed / rows.length) * 100) / 10,
+    complete: concluded.length >= expected,
+    score: concluded.length
+      ? Math.round((passed / concluded.length) * 100) / 10
+      : 0,
   };
+}
+
+// Why a not-passed result produced no to-do, judged by the current settings: the object is paused or archived,
+// or it turned the Check off.
+export function skipReason(detail: Detail, result: Result) {
+  const object = detail.objects.find((o) => o.id === result.objectId);
+  if (!object) return 'archived';
+  if (object.testingPaused) return 'paused';
+  if (isExcluded(detail, result.checkId, result.objectId)) return 'disabled';
+  if (!detail.checks.some((c) => c.id === result.checkId)) return 'archived';
+  return null;
+}
+
+// How many of the run's planned pairs have been reported; imported runs are complete as imported.
+export function runProgress(run: Run, results: readonly Result[]) {
+  const total = run.plan?.length ?? results.length;
+  return { done: Math.min(results.length, total), total };
+}
+
+export function time(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : '—';
+}
+
+// The latest run's conclusion for a Check (on one object, or across all its objects).
+export function latestConclusion(
+  results: readonly Result[] | undefined,
+  checkId: number,
+  objectId?: number,
+) {
+  const rows = (results ?? []).filter(
+    (r) =>
+      r.checkId === checkId &&
+      (objectId === undefined || r.objectId === objectId),
+  );
+  if (!rows.length) return 'not_run';
+  return rows.some((r) => r.conclusion === 'failed') ? 'failed' : 'passed';
+}
+export function latestVersion(detail: Detail, checkId: number) {
+  return Math.max(
+    ...detail.standards
+      .filter((s) => s.checkId === checkId)
+      .map((s) => s.version),
+  );
 }

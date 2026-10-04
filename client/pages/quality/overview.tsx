@@ -1,333 +1,359 @@
 import { useTranslation } from '@nocobase/i18n/client';
 import {
   ArrowRight,
-  BookOpen,
-  ChartNoAxesColumn,
   CircleCheck,
   CircleDashed,
-  FolderOpen,
+  CircleX,
+  GitPullRequest,
   History,
-  Layers3,
   ListChecks,
-  PlugZap,
-  Workflow,
+  ScanEye,
+  TrendingDown,
+  TrendingUp,
 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
-import type { Detail, RunDetail, WorkItem } from './types.js';
-import { useLatestRun, useRequest } from './use-quality-data.js';
-import { effectiveCount, testedApplicability } from './model.js';
+import { Skeleton } from '@/components/ui/skeleton';
+import type {
+  Detail,
+  Result,
+  RunDetail,
+  RunSummary,
+  WorkItem,
+} from './types.js';
+import { useRequest } from './use-quality-data.js';
+import { runProgress, skipReason, time } from './model.js';
 import { SectionTitle } from './ui.js';
+import {
+  RunDispatch,
+  RunProgress,
+  RunStatusBadge,
+  StartRunButton,
+} from './run-status.js';
 
+type Go = (view: string, extra?: Record<string, string>) => void;
+
+const pairKey = (r: Pick<Result, 'checkId' | 'objectId'>) =>
+  r.checkId + ':' + r.objectId;
+
+// What changed between two runs, by Check × object; results still awaiting review are left out.
+function compareRuns(current: readonly Result[], previous: readonly Result[]) {
+  const before = new Map(
+    previous
+      .filter((r) => r.reviewStatus !== 'pending')
+      .map((r) => [pairKey(r), r.conclusion]),
+  );
+  const now = current.filter((r) => r.reviewStatus !== 'pending');
+  return {
+    newlyFailed: now.filter(
+      (r) => r.conclusion === 'failed' && before.get(pairKey(r)) !== 'failed',
+    ),
+    recovered: now.filter(
+      (r) => r.conclusion === 'passed' && before.get(pairKey(r)) === 'failed',
+    ),
+    stillFailed: now.filter(
+      (r) => r.conclusion === 'failed' && before.get(pairKey(r)) === 'failed',
+    ),
+  };
+}
+
+// The current run first: what failed, what waits for a person, and what changed since the previous run.
 export function Overview({
   detail,
   go,
   revision,
+  onChanged,
+  onNotice,
 }: {
   detail: Detail;
-  go: (view: string, extra?: Record<string, string>) => void;
+  go: Go;
   revision: number;
+  onChanged: () => void;
+  onNotice: (message: string) => void;
 }) {
   const { t } = useTranslation();
-  const cells = testedApplicability(detail);
-  const covered = cells.filter(
-    (a) => effectiveCount(detail, a.objectId, a.dimensionId) > 0,
-  ).length;
-  const rate = cells.length ? Math.round((covered / cells.length) * 100) : 0;
-  const allItems = useRequest<WorkItem[]>(
-    'quality/projects/' + detail.project.id + '/work-items?scope=all',
+  const base = 'quality/projects/' + detail.project.id;
+  const runs = useRequest<RunSummary[]>(base + '/runs', revision);
+  const list = Array.isArray(runs.data) ? runs.data : [];
+  const latest = useRequest<RunDetail>(
+    list[0] ? base + '/runs/' + list[0].id : '',
     revision,
   ).data;
-  const openAll = Array.isArray(allItems)
-    ? allItems.filter((i) => i.status === 'open')
-    : [];
-  const metrics = [
-    {
-      label: t('qc.objects'),
-      value: detail.objects.length,
-      hint:
-        t('qc.categoryCount', {
-          count: new Set(detail.objects.map((o) => o.category)).size,
-        }) +
-        (detail.objects.some((o) => o.testingPaused)
-          ? ' · ' +
-            t('qc.pausedCount', {
-              count: detail.objects.filter((o) => o.testingPaused).length,
-            })
-          : ''),
-      Icon: FolderOpen,
-      next: 'configuration',
-    },
-    {
-      label: t('qc.dimensions'),
-      value: detail.dimensions.length,
-      hint: detail.dimensions.map((d) => d.name).join(' · '),
-      Icon: Layers3,
-      next: 'configuration',
-    },
-    {
-      label: t('qc.checks'),
-      value: detail.checks.length,
-      hint: t('qc.versionCount', { count: detail.standards.length }),
-      Icon: BookOpen,
-      next: 'checks',
-    },
-    {
-      label: t('qc.tasks'),
-      value: openAll.length,
-      hint: t('qc.taskHint', {
-        pr: openAll.filter((i) => i.kind === 'pr_review').length,
-        manual: openAll.filter((i) => i.kind === 'manual').length,
+  const previous = useRequest<RunDetail>(
+    list[1] ? base + '/runs/' + list[1].id : '',
+    revision,
+  ).data;
+  const items = useRequest<WorkItem[]>(
+    base + '/work-items?scope=all',
+    revision,
+  ).data;
+  const mine = useRequest<WorkItem[]>(base + '/work-items', revision).data;
+  const running = list.some((r) => r.displayStatus === 'running');
+  const started = (run: { key: string; externalTaskId?: string | null }) => {
+    onNotice(
+      t(run.externalTaskId ? 'qc.runStarted' : 'qc.runStartedManual', {
+        key: run.key,
       }),
-      Icon: Workflow,
-      next: 'tasks',
+    );
+    onChanged();
+  };
+  const start = (
+    <StartRunButton detail={detail} running={running} onStarted={started} />
+  );
+  if (!runs.data && !runs.failed) return <Skeleton className='h-72 w-full' />;
+  if (!list.length)
+    return (
+      <Card className='qc-card'>
+        <CardContent className='flex flex-col items-center gap-4 p-12 text-center'>
+          <History className='size-8 text-muted-foreground' />
+          <div>
+            <p className='text-lg font-semibold'>{t('qc.now.noRunTitle')}</p>
+            <p className='mx-auto mt-2 max-w-lg text-sm leading-6 text-muted-foreground'>
+              {t('qc.now.noRunBody')}
+            </p>
+          </div>
+          {start}
+        </CardContent>
+      </Card>
+    );
+  if (!latest) return <Skeleton className='h-72 w-full' />;
+  const { run, results, workItems } = latest;
+  const failed = results.filter(
+    (r) => r.conclusion === 'failed' && r.reviewStatus !== 'pending',
+  );
+  const pending = results.filter((r) => r.reviewStatus === 'pending');
+  const openPrs = (items ?? []).filter(
+    (i) => i.status === 'open' && i.kind === 'pr_review',
+  );
+  const myOpen = (mine ?? []).filter((i) => i.status === 'open');
+  const { done, total } = runProgress(run, results);
+  const notRun = total - done;
+  const name = (r: Result) =>
+    (detail.checks.find((c) => c.id === r.checkId)?.name ?? '#' + r.checkId) +
+    ' · ' +
+    (detail.objects.find((o) => o.id === r.objectId)?.name ?? '#' + r.objectId);
+  const openCell = (r: Result) =>
+    go('run', {
+      record: String(run.id),
+      object: String(r.objectId),
+      dimension: String(
+        detail.checks.find((c) => c.id === r.checkId)?.dimensionId ?? '',
+      ),
+    });
+  const tiles = [
+    {
+      key: 'failed',
+      value: failed.length,
+      tone: failed.length ? 'bad' : 'good',
+      Icon: CircleX,
+      onClick: () => go('run', { record: String(run.id), failed: '1' }),
     },
-  ];
-  const latest = useLatestRun(detail.project.id, revision);
-  const openItems =
-    latest?.workItems.filter((i) => i.status === 'open').length ?? 0;
-  const steps = [
-    ['stepDefine', detail.checks.length > 0, 'checks'],
-    ['stepTask', !!latest, 'runs'],
-    ['stepEvidence', !!latest?.results.length, 'runs'],
-    ['stepReview', !!latest && openItems === 0, 'todo'],
+    {
+      key: 'pendingReview',
+      value: pending.length,
+      tone: pending.length ? 'warn' : 'muted',
+      Icon: ScanEye,
+      onClick: () => go('todo'),
+    },
+    {
+      key: 'openPrs',
+      value: openPrs.length,
+      tone: openPrs.length ? 'warn' : 'muted',
+      Icon: GitPullRequest,
+      onClick: () => go('todo', { scope: 'all' }),
+    },
+    {
+      key: 'myTodo',
+      value: myOpen.length,
+      tone: myOpen.length ? 'primary' : 'muted',
+      Icon: ListChecks,
+      onClick: () => go('todo'),
+    },
   ] as const;
-  const done = steps.filter((s) => s[1]).length;
+  const diff = previous ? compareRuns(results, previous.results) : null;
   return (
     <>
-      <section className='qc-hero qc-card relative overflow-hidden rounded-2xl border p-6 md:p-7'>
-        <div className='relative z-10 grid gap-6 lg:grid-cols-[1fr_minmax(16rem,22rem)] lg:items-center'>
-          <div className='min-w-0'>
-            <div className='mb-4 flex flex-wrap gap-2'>
-              <Badge variant='outline' className='qc-tone qc-tone-primary'>
-                <Layers3 />
-                {t('qc.dimensionCount', { count: detail.dimensions.length })}
-              </Badge>
-              <Badge variant='outline' className='qc-tone qc-tone-warn'>
-                <PlugZap />
-                {t('qc.executorOff')}
-              </Badge>
+      <Card className='qc-card overflow-hidden'>
+        <CardContent className='grid gap-6 p-6 lg:grid-cols-[1fr_auto] lg:items-start'>
+          <div className='min-w-0 space-y-4'>
+            <div className='flex flex-wrap items-center gap-3'>
+              <RunStatusBadge run={run} />
+              <h2 className='font-mono text-2xl font-semibold'>{run.key}</h2>
+              <span className='text-sm text-muted-foreground'>
+                {time(run.startedAt)}
+                {run.finishedAt ? ' → ' + time(run.finishedAt) : ''}
+              </span>
             </div>
-            <h2 className='text-2xl font-semibold tracking-tight md:text-3xl'>
-              {detail.project.name}
-            </h2>
-            <p className='mt-3 max-w-2xl text-sm leading-7 text-muted-foreground'>
-              {detail.project.description || t('qc.heroBody')}
-            </p>
-            <div className='mt-5 flex flex-wrap gap-3'>
-              <Button onClick={() => go('coverage')}>
-                {t('qc.allCoverage')}
-                <ArrowRight />
-              </Button>
-              <Button variant='outline' onClick={() => go('checks')}>
-                <BookOpen />
-                {t('qc.checks')}
-              </Button>
-            </div>
+            <RunProgress run={run} results={results} />
+            <RunDispatch detail={detail} run={run} onChanged={onChanged} />
           </div>
-          <div className='rounded-xl border bg-card/80 p-5 backdrop-blur-sm'>
-            <p className='text-sm text-muted-foreground'>
-              {t('qc.coverageRate')}
-            </p>
-            <p className='mt-2 flex items-baseline gap-1'>
-              <strong className='text-4xl font-semibold tabular-nums'>
-                {rate}
-              </strong>
-              <span className='text-muted-foreground'>%</span>
-            </p>
-            <Progress
-              value={rate}
-              className='mt-4'
-              aria-label={t('qc.coverageRate')}
-            />
-            <p className='mt-3 text-xs leading-5 text-muted-foreground'>
-              {t('qc.coverageDetail', { done: covered, total: cells.length })}
-            </p>
+          <div className='flex flex-wrap items-start gap-2 lg:flex-col lg:items-end'>
+            {start}
+            <Button
+              variant='ghost'
+              size='sm'
+              onClick={() => go('run', { record: String(run.id) })}
+            >
+              {t('qc.openRun')}
+              <ArrowRight />
+            </Button>
           </div>
-        </div>
-      </section>
-      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-        {metrics.map(({ label, value, hint, Icon, next }) => (
-          <Card
-            key={label}
-            className='qc-card qc-lift cursor-pointer'
-            role='link'
-            tabIndex={0}
-            onClick={() => go(next)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') go(next);
-            }}
+        </CardContent>
+      </Card>
+      <div className='grid grid-cols-2 gap-4 xl:grid-cols-4'>
+        {tiles.map(({ key, value, tone, Icon, onClick }) => (
+          <button
+            type='button'
+            key={key}
+            onClick={onClick}
+            className={
+              'qc-tone qc-tone-' +
+              tone +
+              ' qc-lift flex items-center justify-between rounded-xl border p-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            }
           >
-            <CardContent className='p-5'>
-              <div className='flex items-center justify-between'>
-                <span className='text-sm text-muted-foreground'>{label}</span>
-                <span className='qc-icon-tile rounded-lg p-2'>
-                  <Icon className='size-4' />
-                </span>
-              </div>
-              <strong className='mt-3 block text-3xl font-semibold tabular-nums'>
+            <span>
+              <span className='text-sm'>{t('qc.now.' + key)}</span>
+              <strong className='mt-1 block text-3xl font-semibold tabular-nums'>
                 {value}
               </strong>
-              <p className='mt-2 truncate text-xs text-muted-foreground'>
-                {hint}
-              </p>
-            </CardContent>
-          </Card>
+            </span>
+            <Icon className='size-6 opacity-70' />
+          </button>
         ))}
       </div>
-      <div className='grid gap-6 xl:grid-cols-3'>
+      <div className='grid items-start gap-6 xl:grid-cols-3'>
         <Card className='qc-card xl:col-span-2'>
-          <CardContent className='space-y-5 p-6'>
+          <CardContent className='space-y-4 p-6'>
             <SectionTitle
-              icon={<ChartNoAxesColumn />}
-              title={t('qc.dimensionCoverage')}
-              description={t('qc.dimensionCoverageBody')}
+              icon={<CircleX />}
+              title={t('qc.now.failedList') + ' · ' + failed.length}
+              description={
+                notRun > 0
+                  ? t('qc.now.notRun') + ' ' + notRun
+                  : t('qc.scoreRule')
+              }
             />
-            <div className='space-y-4'>
-              {detail.dimensions.map((d) => {
-                const own = cells.filter((a) => a.dimensionId === d.id);
-                const withChecks = own.filter(
-                  (a) => effectiveCount(detail, a.objectId, d.id) > 0,
-                ).length;
-                return (
-                  <button
-                    type='button'
-                    key={d.id}
-                    className='block w-full rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring'
-                    onClick={() => go('checks', { dimension: String(d.id) })}
-                  >
-                    <span className='mb-2 flex items-center justify-between gap-3 text-sm'>
-                      <span className='font-medium'>{d.name}</span>
-                      <span className='text-xs tabular-nums text-muted-foreground'>
-                        {t('qc.objectsWithChecks', {
-                          done: withChecks,
-                          total: own.length,
-                        })}
-                      </span>
-                    </span>
-                    <Progress
-                      value={own.length ? (withChecks / own.length) * 100 : 0}
-                      aria-label={d.name}
-                    />
-                  </button>
-                );
-              })}
-            </div>
+            {failed.length ? (
+              <ul className='divide-y rounded-xl border'>
+                {failed.map((r) => {
+                  const item = workItems.find((i) => i.resultId === r.id);
+                  const reason = item ? null : skipReason(detail, r);
+                  return (
+                    <li key={r.id}>
+                      <button
+                        type='button'
+                        onClick={() => openCell(r)}
+                        className='flex w-full flex-wrap items-start justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none'
+                      >
+                        <span className='min-w-0 flex-1'>
+                          <span className='block font-medium'>{name(r)}</span>
+                          {r.note && (
+                            <span className='mt-1 block truncate text-sm text-muted-foreground'>
+                              {r.note}
+                            </span>
+                          )}
+                        </span>
+                        {item ? (
+                          <Badge
+                            variant='outline'
+                            className={
+                              'qc-tone ' +
+                              (item.status === 'open'
+                                ? 'qc-tone-warn'
+                                : 'qc-tone-muted')
+                            }
+                          >
+                            {t('qc.workKind.' + item.kind)} ·{' '}
+                            {t('qc.workStatus.' + item.status)}
+                          </Badge>
+                        ) : (
+                          reason && (
+                            <span className='text-xs text-muted-foreground'>
+                              {t('qc.skip.' + reason)}
+                            </span>
+                          )
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className='flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-muted-foreground'>
+                <CircleCheck className='size-4' />
+                {t('qc.now.noFailed')}
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card className='qc-card'>
-          <CardContent className='space-y-5 p-6'>
+          <CardContent className='space-y-4 p-6'>
             <SectionTitle
-              icon={<ListChecks />}
-              title={t('qc.loop')}
-              description={t('qc.loopDone', { done, total: steps.length })}
+              icon={<History />}
+              title={t('qc.now.compare')}
+              description={
+                previous
+                  ? t('qc.now.compareWith', { key: previous.run.key })
+                  : t('qc.now.noPrevious')
+              }
             />
-            <Progress
-              value={(done / steps.length) * 100}
-              aria-label={t('qc.loop')}
-            />
-            <ol className='space-y-1'>
-              {steps.map(([key, ok, next], i) => (
-                <li key={key}>
-                  <Button
-                    variant='ghost'
-                    className='h-auto w-full justify-start gap-3 whitespace-normal py-2.5 text-left'
-                    onClick={() => go(next)}
-                  >
-                    {ok ? (
-                      <CircleCheck className='qc-tone-good size-5 shrink-0 text-(--qc-fg)' />
-                    ) : (
-                      <CircleDashed className='size-5 shrink-0 text-muted-foreground' />
-                    )}
-                    <span className={ok ? 'text-muted-foreground' : ''}>
-                      <span className='mr-2 font-mono text-xs'>0{i + 1}</span>
-                      {t('qc.' + key)}
-                    </span>
-                  </Button>
-                </li>
+            {diff &&
+              (diff.newlyFailed.length ||
+              diff.recovered.length ||
+              diff.stillFailed.length ? (
+                (
+                  [
+                    ['newlyFailed', diff.newlyFailed, TrendingDown, 'bad'],
+                    ['recovered', diff.recovered, TrendingUp, 'good'],
+                    ['stillFailed', diff.stillFailed, CircleDashed, 'muted'],
+                  ] as const
+                ).map(([key, rows, Icon, tone]) =>
+                  rows.length ? (
+                    <section key={key} className='space-y-2'>
+                      <h3
+                        className={
+                          'qc-tone qc-tone-' +
+                          tone +
+                          ' inline-flex items-center gap-2 rounded-md border px-2 py-0.5 text-xs font-medium'
+                        }
+                      >
+                        <Icon className='size-3.5' />
+                        {t('qc.now.' + key)} · {rows.length}
+                      </h3>
+                      <ul className='space-y-1 text-sm'>
+                        {rows.slice(0, 8).map((r) => (
+                          <li key={r.id} className='truncate'>
+                            {name(r)}
+                          </li>
+                        ))}
+                        {rows.length > 8 && (
+                          <li className='text-xs text-muted-foreground'>
+                            … {rows.length - 8}
+                          </li>
+                        )}
+                      </ul>
+                    </section>
+                  ) : null,
+                )
+              ) : (
+                <p className='text-sm text-muted-foreground'>
+                  {t('qc.now.nothingChanged')}
+                </p>
               ))}
-            </ol>
-            <p className='border-t pt-4 text-xs leading-6 text-muted-foreground'>
-              {t('qc.executorNote')}
-            </p>
+            <Button
+              variant='ghost'
+              size='sm'
+              className='-ml-2'
+              onClick={() => go('runs')}
+            >
+              {t('qc.now.allRuns')}
+              <ArrowRight />
+            </Button>
           </CardContent>
         </Card>
       </div>
-      <div className='grid gap-6 xl:grid-cols-3'>
-        <LatestRunCard go={go} latest={latest} />
-      </div>
     </>
-  );
-}
-
-function LatestRunCard({
-  go,
-  latest,
-}: {
-  go: (view: string, extra?: Record<string, string>) => void;
-  latest?: RunDetail;
-}) {
-  const { t } = useTranslation();
-  const passed =
-    latest?.results.filter((r) => r.conclusion === 'passed').length ?? 0;
-  const failed = (latest?.results.length ?? 0) - passed;
-  const open = latest?.workItems.filter((i) => i.status === 'open').length ?? 0;
-  return (
-    <Card className='qc-card xl:col-span-3'>
-      <CardContent className='space-y-4 p-6'>
-        <SectionTitle
-          icon={<History />}
-          title={t('qc.latestRun')}
-          description={latest ? latest.run.key : t('qc.latestRunEmpty')}
-          action={
-            <div className='flex gap-2'>
-              <Button variant='ghost' size='sm' onClick={() => go('runs')}>
-                {t('qc.runs')}
-                <ArrowRight />
-              </Button>
-              {latest && (
-                <Button
-                  size='sm'
-                  onClick={() => go('run', { record: String(latest.run.id) })}
-                >
-                  {t('qc.openRun')}
-                </Button>
-              )}
-            </div>
-          }
-        />
-        {latest && (
-          <div className='grid gap-3 sm:grid-cols-3'>
-            {(
-              [
-                ['runPassed', passed, 'good'],
-                ['runFailed', failed, failed ? 'bad' : 'muted'],
-                ['runOpenItems', open, open ? 'warn' : 'muted'],
-              ] as const
-            ).map(([key, value, tone]) => (
-              <button
-                type='button'
-                key={key}
-                className={
-                  'qc-tone qc-tone-' + tone + ' rounded-xl border p-4 text-left'
-                }
-                onClick={() =>
-                  key === 'runOpenItems'
-                    ? go('todo')
-                    : go('run', { record: String(latest.run.id) })
-                }
-              >
-                <span className='text-xs'>{t('qc.' + key)}</span>
-                <strong className='mt-1 block text-2xl tabular-nums'>
-                  {value}
-                </strong>
-              </button>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }

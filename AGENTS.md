@@ -400,6 +400,16 @@ Navigation groups retain their expanded or collapsed state while the navigation 
 
 The /quality route uses a project Select and one project-scoped navigation set within the existing AppLayout sidebar. Query parameters preserve project, view and record context; static route metadata cannot express this dynamic project context. Authentication, theme and account controls remain provided by the application shell. The first persisted release is root-managed; its API checks unrestricted authorization explicitly.
 
+Runs are started by NocoQuality (`POST /quality/projects/:id/runs`), which fixes the run's plan and, when the `nocoproject` configuration section is set, creates one NocoProject issue for the executor. The executor reports one result at a time and finishes the run; `server/quality/run-loop.ts` owns these rules and `server/quality/nocoproject.ts` is the only NocoProject call. Configure NocoProject through `nocoproject` in `config.yml` or the `NOCOPROJECT_*` variables, never in the browser.
+
+The quality workbench page is split by feature under `client/pages/quality/`: `index.tsx` holds the frame and view switching, with `overview.tsx`, `coverage.tsx`, `checks.tsx`, `runs.tsx`, `editors.tsx`, `definitions.tsx` and shared pieces in `form.tsx`, `run-status.tsx`, `model.ts` and `ui.tsx`.
+
+## Template deviations
+
+- `client/theme/theme-presets.ts` registers `nocoquality` first, ahead of Compact, so the NocoQuality palette is the default and the fallback without a `config.yml` setting: the online Hub keeps its own runtime configuration. The theme preference tests expect this order.
+- `client/layouts/components/app-brand.tsx` shows the NocoBase mark with the application title instead of the full NocoBase logo.
+- Product status tones (`--qc-teal`, `--qc-warn`, `--qc-bad` and their soft variants) are defined globally in `client/pages/quality/quality.css`; base colors come only from the theme preset.
+
 ## Local validation preference (2026-09-29)
 
 The user explicitly requests local development and debugging first. Keep pnpm dev running and use targeted checks and browser verification. Do not repeatedly run production builds for routine iterations; reserve them for an actual release requirement or an explicit user request.

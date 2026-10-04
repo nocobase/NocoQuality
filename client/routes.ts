@@ -1,4 +1,4 @@
-import { Home, Layers3 } from 'lucide-react';
+import { Layers3 } from 'lucide-react';
 import {
   defineAppRoutes,
   defineSettingsRoutes,
@@ -15,13 +15,13 @@ const appRoutes: AppClientRouteContribution = defineAppRoutes([
     navigation: { title: 'navigation.quality', icon: Layers3, order: 1 },
   },
   {
-    // Every signed-in user reaches the landing page. `authz: 'skip'` takes it out of page authorization entirely, so
-    // no permission change can leave a user signed in with nowhere to land.
+    // Every signed-in user reaches the root, which redirects to the quality workspace. It has no menu entry.
+    // `authz: 'skip'` takes it out of page authorization entirely, so no permission change can leave a user signed
+    // in with nowhere to land.
     authz: 'skip',
     auth: 'required',
     componentLoader: () => import('./pages/home.js'),
     name: 'home',
-    navigation: { title: 'navigation.home', icon: Home },
     path: '/',
   },
   {

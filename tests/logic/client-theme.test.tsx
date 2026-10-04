@@ -61,6 +61,7 @@ describe('app client theme', () => {
     },
   );
 
+  // NocoQuality registers its own palette first, so removed or invalid presets fall back to it, not Compact.
   it('falls back from the removed Ant Design preset without changing mode', async () => {
     localStorage.setItem('nocobase:crm:theme:preset', 'ant-design');
     localStorage.setItem('nocobase:crm:theme:color-scheme', 'light');
@@ -73,11 +74,14 @@ describe('app client theme', () => {
     expect(
       screen.queryByRole('radio', { name: 'Ant-design' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Compact' })).toBeChecked();
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(screen.getByRole('radio', { name: 'Nocoquality' })).toBeChecked();
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
     expect(document.documentElement).toHaveClass('light');
   });
-  it('omits Ocean and falls back from its saved ID to Compact', async () => {
+  it('omits Ocean and falls back from its saved ID to the NocoQuality default', async () => {
     localStorage.setItem('nocobase:crm:theme:preset', 'ocean');
     render(
       <AppThemeProvider>
@@ -88,9 +92,12 @@ describe('app client theme', () => {
     expect(
       screen.queryByRole('radio', { name: 'Ocean' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Compact' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Nocoquality' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Default' })).toBeInTheDocument();
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
   });
 
   beforeEach(() => {
@@ -165,7 +172,7 @@ describe('app client theme', () => {
   );
 
   it.each([
-    [undefined, undefined, 'compact'],
+    [undefined, undefined, 'nocoquality'],
     ['default', undefined, 'default'],
     [undefined, 'default', 'default'],
     ['default', 'compact', 'compact'],
@@ -188,7 +195,12 @@ describe('app client theme', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Appearance' }));
       expect(
         screen.getByRole('radio', {
-          name: expected === 'compact' ? 'Compact' : 'Default',
+          name:
+            expected === 'compact'
+              ? 'Compact'
+              : expected === 'nocoquality'
+                ? 'Nocoquality'
+                : 'Default',
         }),
       ).toBeChecked();
       expect(document.documentElement).toHaveAttribute('data-theme', expected);
@@ -265,7 +277,10 @@ describe('app client theme', () => {
       </AppThemeProvider>,
     );
     await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
   });
 
   it('follows the system theme and persists explicit changes', async () => {
@@ -348,7 +363,10 @@ describe('app client theme', () => {
     localStorage.clear();
     fireEvent(window, new StorageEvent('storage', { key: null }));
     await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
   });
   it('keeps selections usable when browser storage is unavailable', async () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
@@ -392,7 +410,10 @@ describe('app client theme', () => {
         newValue: 'removed',
       }),
     );
-    expect(document.documentElement).toHaveAttribute('data-theme', 'compact');
+    expect(document.documentElement).toHaveAttribute(
+      'data-theme',
+      'nocoquality',
+    );
     fireEvent(
       window,
       new StorageEvent('storage', {

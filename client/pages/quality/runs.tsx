@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -40,7 +41,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cellScore } from './model.js';
+import { cellScore, runProgress, skipReason } from './model.js';
+import { RunDispatch, RunProgress, RunStatusBadge } from './run-status.js';
 import type {
   Check,
   Detail,
@@ -64,18 +66,33 @@ export function ScoreChip({
   total,
   complete,
   expected,
+  pending = 0,
 }: {
   score: number;
   passed: number;
   total: number;
   complete: boolean;
   expected: number;
+  pending?: number;
 }) {
   const { t } = useTranslation();
+  // An unfinished cell has no score yet, but a failure or a waiting review already shows.
   if (!complete)
     return (
-      <span className='text-xs text-muted-foreground'>
-        {t('qc.runProgress', { done: total, total: expected })}
+      <span className='text-xs'>
+        <span className='text-muted-foreground'>
+          {t('qc.runProgress', { done: total + pending, total: expected })}
+        </span>
+        {total > passed && (
+          <span className='block font-medium'>
+            {t('qc.runFailed')} {total - passed}
+          </span>
+        )}
+        {pending > 0 && (
+          <span className='block'>
+            {t('qc.reviewPending')} {pending}
+          </span>
+        )}
       </span>
     );
   return (
@@ -131,7 +148,9 @@ export function RunList({
             <TableRow className='bg-muted/50 hover:bg-muted/50'>
               {[
                 'runKey',
+                'runStatusLabel',
                 'runTime',
+                'runProgressCol',
                 'runRevision',
                 'runPassed',
                 'runFailed',
@@ -163,7 +182,18 @@ export function RunList({
                     {run.key}
                   </Button>
                 </TableCell>
+                <TableCell>
+                  <RunStatusBadge run={run} />
+                </TableCell>
                 <TableCell className='text-sm'>{time(run.startedAt)}</TableCell>
+                <TableCell className='text-sm tabular-nums'>
+                  {run.passed + run.failed} / {run.expected}
+                  {run.pendingReview > 0 && (
+                    <span className='ml-2 text-xs text-muted-foreground'>
+                      {t('qc.reviewPending')} {run.pendingReview}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell className='font-mono text-xs'>
                   code {shortSha(run.environment?.code?.commit)}
                   <span className='mx-1 text-muted-foreground'>·</span>
@@ -229,14 +259,19 @@ function ResultCard({
   result,
   item,
   users,
+  onChanged,
 }: {
   detail: Detail;
   result: Result;
   item?: WorkItem;
   users: QualityUser[];
+  onChanged?: () => void;
 }) {
   const { t } = useTranslation();
   const failed = result.conclusion === 'failed';
+  const pending = result.reviewStatus === 'pending';
+  const reason =
+    !item && failed && !pending ? skipReason(detail, result) : null;
   const [open, setOpen] = useState(failed);
   const check = detail.checks.find((c) => c.id === result.checkId);
   const version = detail.standards.find((s) => s.id === result.standardId);
@@ -249,7 +284,13 @@ function ResultCard({
     >
       <div className='flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-5 py-3'>
         <div className='flex min-w-0 items-center gap-3'>
-          <StatusBadge kind='result' value={result.conclusion} />
+          {pending ? (
+            <Badge variant='outline' className='qc-tone qc-tone-warn'>
+              {t('qc.reviewPending')}
+            </Badge>
+          ) : (
+            <StatusBadge kind='result' value={result.conclusion} />
+          )}
           <h3 className='truncate text-base font-semibold'>
             {check?.name ?? '#' + result.checkId}
           </h3>
@@ -271,9 +312,24 @@ function ResultCard({
             </a>
           )}
           <WorkItemState item={item} users={users} />
+          {reason && <span>{t('qc.skip.' + reason)}</span>}
         </div>
       </div>
       <div className='space-y-4 p-5'>
+        {pending && (
+          <ReviewForm detail={detail} result={result} onChanged={onChanged} />
+        )}
+        {result.reviewStatus === 'confirmed' && (
+          <p className='text-xs text-muted-foreground'>
+            {t('qc.reviewedBy', {
+              name:
+                users.find((u) => u.id === result.reviewedBy)?.name ??
+                result.reviewedBy,
+              at: time(result.reviewedAt),
+            })}
+            {result.reviewNote ? ' · ' + result.reviewNote : ''}
+          </p>
+        )}
         {result.note && (
           <p
             className={
@@ -306,6 +362,68 @@ function ResultCard({
   );
 }
 
+// A person confirms a result whose standard requires review; only then does it count toward the score.
+function ReviewForm({
+  detail,
+  result,
+  onChanged,
+}: {
+  detail: Detail;
+  result: Result;
+  onChanged?: () => void;
+}) {
+  const { t } = useTranslation();
+  const { submit, busy, error } = useSubmission();
+  const [note, setNote] = useState('');
+  const send = (conclusion: 'passed' | 'failed') =>
+    void submit(
+      'quality/projects/' +
+        detail.project.id +
+        '/runs/' +
+        result.runId +
+        '/results/' +
+        result.id +
+        '/review',
+      { conclusion, ...(note.trim() ? { note: note.trim() } : {}) },
+      () => onChanged?.(),
+    );
+  return (
+    <div className='qc-tone qc-tone-warn space-y-3 rounded-lg border p-4'>
+      <p className='text-sm'>
+        {t('qc.reviewHint', {
+          conclusion: t(
+            'qc.resultStatus.' +
+              (result.reportedConclusion ?? result.conclusion),
+          ),
+        })}
+      </p>
+      <Textarea
+        aria-label={t('qc.reviewNoteLabel')}
+        placeholder={t('qc.reviewNoteLabel')}
+        value={note}
+        maxLength={5000}
+        rows={2}
+        className='bg-background text-foreground'
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className='flex flex-wrap gap-2'>
+        <Button size='sm' disabled={busy} onClick={() => send('passed')}>
+          {t('qc.confirmPassed')}
+        </Button>
+        <Button
+          size='sm'
+          variant='destructive'
+          disabled={busy}
+          onClick={() => send('failed')}
+        >
+          {t('qc.confirmFailed')}
+        </Button>
+      </div>
+      {error && <p className='text-sm text-destructive'>{error}</p>}
+    </div>
+  );
+}
+
 // One cell's results in a wide side panel, reachable from the run page and from the overall matrix.
 export function CellResultsSheet({
   detail,
@@ -313,12 +431,14 @@ export function CellResultsSheet({
   cell,
   onClose,
   onOpenRun,
+  onChanged,
 }: {
   detail: Detail;
   data: RunDetail | undefined;
   cell: { o: number; d: number } | null;
   onClose: () => void;
   onOpenRun?: () => void;
+  onChanged?: () => void;
 }) {
   const { t } = useTranslation();
   const users = useUsers();
@@ -353,9 +473,11 @@ export function CellResultsSheet({
               <div
                 className={
                   'qc-tone rounded-xl border px-4 py-2 ' +
-                  (scored.passed === scored.total
-                    ? 'qc-tone-good'
-                    : 'qc-tone-bad')
+                  (!scored.complete
+                    ? 'qc-tone-muted'
+                    : scored.passed === scored.total
+                      ? 'qc-tone-good'
+                      : 'qc-tone-bad')
                 }
               >
                 <ScoreChip {...scored} />
@@ -382,6 +504,7 @@ export function CellResultsSheet({
               result={r}
               item={data?.workItems.find((i) => i.resultId === r.id)}
               users={users}
+              onChanged={onChanged}
             />
           ))}
         </div>
@@ -396,19 +519,23 @@ export function RunView({
   go,
   revision,
   initialCell,
+  initialOnlyFailed = false,
+  onChanged,
 }: {
   detail: Detail;
   runId: string;
   go: Go;
   revision: number;
   initialCell: { o: number; d: number } | null;
+  initialOnlyFailed?: boolean;
+  onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const state = useRequest<RunDetail>(
     'quality/projects/' + detail.project.id + '/runs/' + runId,
     revision,
   );
-  const [onlyFailed, setOnlyFailed] = useState(false);
+  const [onlyFailed, setOnlyFailed] = useState(initialOnlyFailed);
   const [cell, setCell] = useState<{ o: number; d: number } | null>(
     initialCell,
   );
@@ -419,12 +546,21 @@ export function RunView({
       <Skeleton className='h-72 w-full' />
     );
   const { run, results, workItems } = state.data;
-  const objectIds = new Set(results.map((r) => r.objectId));
+  // A started run shows every planned pair, reported or not; an imported run shows what it brought.
+  const pairs = run.plan ?? results;
+  const objectIds = new Set(pairs.map((r) => r.objectId));
   const checkDims = new Set(
     detail.checks
-      .filter((c) => results.some((r) => r.checkId === c.id))
+      .filter((c) => pairs.some((r) => r.checkId === c.id))
       .map((c) => c.dimensionId),
   );
+  const skipped = results.filter(
+    (r) =>
+      r.conclusion === 'failed' &&
+      r.reviewStatus !== 'pending' &&
+      !workItems.some((i) => i.resultId === r.id),
+  ).length;
+  const { done, total } = runProgress(run, results);
   const dimensions = detail.dimensions.filter((d) => checkDims.has(d.id));
   const objects = detail.objects.filter(
     (o) =>
@@ -433,7 +569,12 @@ export function RunView({
         results.some((r) => r.objectId === o.id && r.conclusion === 'failed')),
   );
   const groups = Array.from(new Set(objects.map((o) => o.category)));
-  const passed = results.filter((r) => r.conclusion === 'passed').length;
+  const passed = results.filter(
+    (r) => r.conclusion === 'passed' && r.reviewStatus !== 'pending',
+  ).length;
+  const pendingReview = results.filter(
+    (r) => r.reviewStatus === 'pending',
+  ).length;
   const env = run.environment;
   return (
     <div className='space-y-5'>
@@ -445,26 +586,37 @@ export function RunView({
         <CardContent className='p-0'>
           <div className='qc-hero relative overflow-hidden border-b p-6'>
             <div className='relative z-10 flex flex-wrap items-end justify-between gap-4'>
-              <div>
-                <Badge variant='outline' className='qc-tone qc-tone-primary'>
-                  <History />
-                  {t('qc.runStatus.' + run.status)}
-                </Badge>
-                <h2 className='mt-3 font-mono text-2xl font-semibold'>
-                  {run.key}
-                </h2>
-                <p className='mt-1 text-sm text-muted-foreground'>
-                  {time(run.startedAt)} → {time(run.finishedAt)} ·{' '}
-                  {run.executor}
+              <div className='min-w-0 space-y-3'>
+                <RunStatusBadge run={run} />
+                <h2 className='font-mono text-2xl font-semibold'>{run.key}</h2>
+                <p className='text-sm text-muted-foreground'>
+                  {time(run.startedAt)} → {time(run.finishedAt)}
+                  {run.executor ? ' · ' + run.executor : ''}
                 </p>
+                {run.plan && (
+                  <div className='max-w-md'>
+                    <RunProgress run={run} results={results} />
+                  </div>
+                )}
+                <RunDispatch detail={detail} run={run} onChanged={onChanged} />
               </div>
-              <div className='flex gap-2'>
+              <div className='flex flex-wrap gap-2'>
                 <Badge variant='outline' className='qc-tone qc-tone-good'>
                   {t('qc.runPassed')} {passed}
                 </Badge>
                 <Badge variant='outline' className='qc-tone qc-tone-bad'>
-                  {t('qc.runFailed')} {results.length - passed}
+                  {t('qc.runFailed')} {results.length - passed - pendingReview}
                 </Badge>
+                {pendingReview > 0 && (
+                  <Badge variant='outline' className='qc-tone qc-tone-warn'>
+                    {t('qc.reviewPending')} {pendingReview}
+                  </Badge>
+                )}
+                {total > done && (
+                  <Badge variant='outline' className='qc-tone qc-tone-muted'>
+                    {t('qc.notRun')} {total - done}
+                  </Badge>
+                )}
                 <Badge variant='outline' className='qc-tone qc-tone-warn'>
                   {t('qc.runOpenItems')}{' '}
                   {workItems.filter((i) => i.status === 'open').length}
@@ -513,6 +665,11 @@ export function RunView({
               {t('qc.onlyFailed')}
             </label>
           </div>
+          {skipped > 0 && (
+            <p className='text-xs text-muted-foreground'>
+              {t('qc.skippedCount', { count: skipped })}
+            </p>
+          )}
           <div className='overflow-x-auto rounded-xl border'>
             <Table className='qc-matrix'>
               <TableHeader>
@@ -562,9 +719,13 @@ export function RunView({
                                     type='button'
                                     className={
                                       'flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring qc-tone ' +
-                                      (s.passed === s.total
-                                        ? 'qc-tone-good'
-                                        : 'qc-tone-bad')
+                                      (s.total > s.passed
+                                        ? 'qc-tone-bad'
+                                        : s.pending
+                                          ? 'qc-tone-warn'
+                                          : !s.complete
+                                            ? 'qc-tone-muted'
+                                            : 'qc-tone-good')
                                     }
                                     onClick={() =>
                                       setCell({ o: o.id, d: d.id })
@@ -572,6 +733,16 @@ export function RunView({
                                   >
                                     <ScoreChip {...s} />
                                   </button>
+                                ) : pairs.some(
+                                    (p) =>
+                                      p.objectId === o.id &&
+                                      detail.checks.find(
+                                        (c) => c.id === p.checkId,
+                                      )?.dimensionId === d.id,
+                                  ) ? (
+                                  <span className='block px-3 text-xs text-muted-foreground'>
+                                    {t('qc.notRun')}
+                                  </span>
                                 ) : (
                                   <span className='block text-center text-xs text-muted-foreground/60'>
                                     —
@@ -626,6 +797,7 @@ export function RunView({
         data={state.data}
         cell={cell}
         onClose={() => setCell(null)}
+        onChanged={onChanged}
       />
     </div>
   );
