@@ -17,6 +17,7 @@ import app from './app.js';
 import database from './database.js';
 import snowflake from './snowflake.js';
 import workflow from './workflow.js';
+import nocoproject from './nocoproject.js';
 
 const defaultConfigs: AppConfigFactory<{
   auth: ReturnType<typeof auth>;
@@ -34,6 +35,7 @@ const defaultConfigs: AppConfigFactory<{
   database: ReturnType<typeof database>;
   snowflake: ReturnType<typeof snowflake>;
   workflow: ReturnType<typeof workflow>;
+  nocoproject: ReturnType<typeof nocoproject>;
 }> = defaultAppConfigs({
   auth,
   authorization,
@@ -50,6 +52,7 @@ const defaultConfigs: AppConfigFactory<{
   database,
   snowflake,
   workflow,
+  nocoproject,
 });
 
 export default defaultConfigs;

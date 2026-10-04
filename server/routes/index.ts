@@ -1,4 +1,21 @@
 import { importRun, runImportSchema } from '../quality/runs.js';
+import {
+  displayStatus,
+  finishRun,
+  recordResult,
+  resultReportSchema,
+  reviewResult,
+  reviewSchema,
+  runFinishSchema,
+  startRun,
+} from '../quality/run-loop.js';
+import {
+  createNocoProjectTask,
+  nocoProjectConfigured,
+  runTaskRequest,
+} from '../quality/nocoproject.js';
+import type { NocoProjectConfig } from '../config/nocoproject.js';
+import type { AppIdentityConfig } from '@nocobase/app-server/config';
 import { exportQualityData } from '../quality/export.js';
 import { notificationServiceToken } from '@nocobase/app-plugin-notification';
 import type { Application } from '@nocobase/app-server/application';
@@ -23,7 +40,6 @@ import type {
   TestObject,
   Check,
   Standard,
-  Task,
   Applicability,
   CheckExclusion,
   Result,
@@ -42,8 +58,25 @@ const standardSchema = z
     passCriteria: text,
     evidence: text,
     humanReview: z.boolean(),
+    judgeMode: z.enum(['script', 'agent', 'session', 'human']).default('agent'),
+    command: z.string().trim().max(2000).nullable().optional(),
   })
   .strict();
+// A script-judged Check must say which script decides it.
+function assertJudge(standard: { judgeMode: string; command?: string | null }) {
+  if (standard.judgeMode === 'script' && !standard.command)
+    throw new HTTPException(400, { message: 'COMMAND_REQUIRED' });
+}
+const materialsSchema = z
+  .array(
+    z
+      .object({
+        type: z.enum(['skill', 'package', 'doc', 'other']),
+        ref: z.string().trim().min(1).max(500),
+      })
+      .strict(),
+  )
+  .max(50);
 const projectSchema = z
   .object({
     name,
@@ -65,6 +98,21 @@ const objectSchema = z
     ]),
     description: z.string().trim().max(10000).default(''),
     dimensionIds: z.array(id).min(1).max(50),
+    materials: materialsSchema.optional(),
+  })
+  .strict();
+const objectUpdateSchema = z
+  .object({
+    name,
+    category: objectSchema.shape.category,
+    description: z.string().trim().max(10000),
+    materials: materialsSchema,
+  })
+  .strict();
+const checkUpdateSchema = z
+  .object({
+    name,
+    source: z.string().trim().max(10000).nullable(),
   })
   .strict();
 const dimensionSchema = z
@@ -78,20 +126,11 @@ const checkSchema = z
     assigneeId: z.string().min(1).max(64).nullable().optional(),
     objectId: id.optional(),
     dimensionId: id,
+    source: z.string().trim().max(10000).nullable().optional(),
     ...standardSchema.shape,
   })
   .strict()
   .refine((v) => (v.scope === 'shared') === (v.objectId === undefined));
-const taskSchema = z
-  .object({
-    checkId: id,
-    standardId: id,
-    revision: z.string().trim().min(1).max(160),
-    environment: z.string().trim().min(1).max(160),
-    objectId: id.optional(),
-    requestKey: z.uuid(),
-  })
-  .strict();
 
 export default [
   defineApiRoutes<Application>((app) => {
@@ -105,6 +144,24 @@ export default [
     const auth = app.container.resolve(authenticationToken);
     const authz = app.container.resolve(authorizationToken);
     const db = app.container.resolve(databaseManagerToken);
+    const nocoProjectConfig = () =>
+      app.config?.get<NocoProjectConfig>('nocoproject');
+    // The run page in NocoQuality, for the NocoProject task. The public origin comes from configuration,
+    // or from the request when none is configured.
+    const runLink = (requestUrl: string, projectId: number, runId: number) => {
+      const identity = app.config?.get<AppIdentityConfig>('app');
+      const url = new URL(requestUrl);
+      const base = (identity?.publicOrigin || url.origin).replace(/\/+$/, '');
+      const path = (identity?.publicBasePath || '').replace(/\/+$/, '');
+      return (
+        base +
+        path +
+        '/quality?project=' +
+        projectId +
+        '&view=run&record=' +
+        runId
+      );
+    };
     router.use('*', auth.required(), authz.middleware());
     // Initial delivery is a root-managed quality workspace. No member gains access through frontend project filtering.
     router.use('*', async (c, next) => {
@@ -199,11 +256,7 @@ export default [
             .repository<Standard>('qcStandards')
             .findMany({ filter: { checkId: check.id } })),
         );
-      // Tasks of archived Checks stay stored as evidence but leave the workspace with their Check.
       const activeCheckIds = new Set(checks.map((check) => check.id));
-      const tasks = (
-        await db.repository<Task>('qcTasks').findMany({ filter: { projectId } })
-      ).filter((task) => activeCheckIds.has(task.checkId));
       // Applicability of archived objects stays stored but leaves the workspace with its object.
       const activeObjectIds = new Set(objects.map((object) => object.id));
       const applicability = (
@@ -227,7 +280,6 @@ export default [
           dimensions: dimensions.sort((a, b) => a.position - b.position),
           checks,
           standards,
-          tasks: tasks.sort((a, b) => b.id - a.id),
           applicability,
         },
       });
@@ -251,6 +303,7 @@ export default [
               name: input.name,
               category: input.category,
               description: input.description,
+              materials: input.materials ?? null,
               active: true,
             },
           })
@@ -349,6 +402,58 @@ export default [
       });
       return c.json({ data: { id: objectId, testingPaused: !input.enabled } });
     });
+    // Names, descriptions and materials change in place; applicability and history stay as they are.
+    router.post('/projects/:id/objects/:objectId/update', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const objectId = id.parse(c.req.param('objectId'));
+      const input = objectUpdateSchema.parse(await c.req.json());
+      const repo = db.repository<TestObject>('qcObjects');
+      if (
+        !(await repo.exists({
+          filter: { id: objectId, projectId, active: true },
+        }))
+      )
+        throw new HTTPException(404, { message: 'OBJECT_NOT_FOUND' });
+      return c.json({
+        data: (
+          await repo.updateOne({
+            filter: { id: objectId, projectId },
+            values: input,
+          })
+        ).record,
+      });
+    });
+    // Archived objects and Checks, so a removal can be undone.
+    router.get('/projects/:id/archived', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      return c.json({
+        data: {
+          objects: await db
+            .repository<TestObject>('qcObjects')
+            .findMany({ filter: { projectId, active: false } }),
+          checks: await db
+            .repository<Check>('qcChecks')
+            .findMany({ filter: { projectId, active: false } }),
+        },
+      });
+    });
+    // Restoring an object brings back only the object; its archived Checks are restored one by one.
+    router.post('/projects/:id/objects/:objectId/restore', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const objectId = id.parse(c.req.param('objectId'));
+      const repo = db.repository<TestObject>('qcObjects');
+      if (
+        !(await repo.exists({
+          filter: { id: objectId, projectId, active: false },
+        }))
+      )
+        throw new HTTPException(404, { message: 'OBJECT_NOT_FOUND' });
+      await repo.updateOne({
+        filter: { id: objectId, projectId },
+        values: { active: true },
+      });
+      return c.json({ data: { id: objectId, active: true } });
+    });
     router.post('/projects/:id/dimensions', async (c) => {
       const projectId = id.parse(c.req.param('id'));
       const input = dimensionSchema.parse(await c.req.json());
@@ -390,8 +495,10 @@ export default [
         dimensionId,
         fixMode,
         assigneeId,
+        source,
         ...standard
       } = checkSchema.parse(await c.req.json());
+      assertJudge(standard);
       const result = await db.transaction(async (conn) => {
         if (
           scope === 'shared'
@@ -410,6 +517,7 @@ export default [
               scope,
               fixMode,
               assigneeId: assigneeId ?? null,
+              source: source || null,
               objectId: scope === 'shared' ? null : objectId,
               dimensionId,
               key: randomUUID(),
@@ -446,6 +554,48 @@ export default [
         values: { active: false },
       });
       return c.json({ data: { id: checkId, active: false } });
+    });
+    router.post('/projects/:id/checks/:checkId/update', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const checkId = id.parse(c.req.param('checkId'));
+      const input = checkUpdateSchema.parse(await c.req.json());
+      const repo = db.repository<Check>('qcChecks');
+      if (
+        !(await repo.exists({
+          filter: { id: checkId, projectId, active: true },
+        }))
+      )
+        throw new HTTPException(404, { message: 'CHECK_NOT_FOUND' });
+      return c.json({
+        data: (
+          await repo.updateOne({
+            filter: { id: checkId, projectId },
+            values: { name: input.name, source: input.source || null },
+          })
+        ).record,
+      });
+    });
+    // An object Check comes back only while its object is in the workspace.
+    router.post('/projects/:id/checks/:checkId/restore', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const checkId = id.parse(c.req.param('checkId'));
+      const repo = db.repository<Check>('qcChecks');
+      const check = await repo.findOne({
+        filter: { id: checkId, projectId, active: false },
+      });
+      if (!check) throw new HTTPException(404, { message: 'CHECK_NOT_FOUND' });
+      if (
+        check.scope === 'object' &&
+        !(await db.repository<TestObject>('qcObjects').exists({
+          filter: { id: check.objectId!, projectId, active: true },
+        }))
+      )
+        throw new HTTPException(409, { message: 'OBJECT_ARCHIVED' });
+      await repo.updateOne({
+        filter: { id: checkId, projectId },
+        values: { active: true },
+      });
+      return c.json({ data: { id: checkId, active: true } });
     });
     // Objects turn a shared Check off or back on; the Check itself stays shared by the rest of its dimension.
     router.post('/projects/:id/checks/:checkId/exclusions', async (c) => {
@@ -501,6 +651,7 @@ export default [
         .extend({ baseVersion: id })
         .strict()
         .parse(await c.req.json());
+      assertJudge(standard);
       const result = await db.transaction(async (conn) => {
         if (
           !(await conn
@@ -526,123 +677,6 @@ export default [
         ).record;
       });
       return c.json({ data: result }, 201);
-    });
-    router.post('/projects/:id/tasks', async (c) => {
-      const projectId = id.parse(c.req.param('id'));
-      const input = taskSchema.parse(await c.req.json());
-      const previous = await db
-        .repository<Task>('qcTasks')
-        .findOne({ filter: { requestKey: input.requestKey, projectId } });
-      if (previous) {
-        if (
-          previous.checkId !== input.checkId ||
-          previous.standardId !== input.standardId ||
-          previous.revision !== input.revision ||
-          previous.environment !== input.environment ||
-          (input.objectId !== undefined && previous.objectId !== input.objectId)
-        )
-          throw new HTTPException(409, { message: 'IDEMPOTENCY_CONFLICT' });
-        return c.json({ data: previous });
-      }
-      const result = await db.transaction(async (conn) => {
-        const check = await conn
-          .repository<Check>('qcChecks')
-          .findOne({ filter: { id: input.checkId, projectId, active: true } });
-        if (!check) throw new HTTPException(400, { message: 'INVALID_CHECK' });
-        // An object Check always runs on its own object; a shared Check runs on one object that inherits it.
-        const objectId =
-          check.scope === 'shared' ? input.objectId : check.objectId;
-        if (
-          !objectId ||
-          (input.objectId !== undefined && input.objectId !== objectId) ||
-          !(await conn.repository<Applicability>('qcApplicability').exists({
-            filter: { projectId, objectId, dimensionId: check.dimensionId },
-          })) ||
-          !(await conn.repository<TestObject>('qcObjects').exists({
-            filter: { id: objectId, projectId, active: true },
-          }))
-        )
-          throw new HTTPException(400, { message: 'INVALID_OBJECT' });
-        if (
-          await conn.repository<TestObject>('qcObjects').exists({
-            filter: { id: objectId, projectId, testingPaused: true },
-          })
-        )
-          throw new HTTPException(409, { message: 'OBJECT_PAUSED' });
-        if (
-          await conn.repository<CheckExclusion>('qcCheckExclusions').exists({
-            filter: { checkId: check.id, objectId },
-          })
-        )
-          throw new HTTPException(409, { message: 'CHECK_DISABLED' });
-        if (
-          !(await conn.repository<Standard>('qcStandards').exists({
-            filter: {
-              id: input.standardId,
-              checkId: input.checkId,
-              published: true,
-            },
-          }))
-        )
-          throw new HTTPException(400, { message: 'INVALID_STANDARD' });
-        return (
-          await conn.repository<Task>('qcTasks').createOne({
-            values: {
-              ...input,
-              objectId,
-              projectId,
-              executionStatus: 'pending_dispatch',
-              conclusion: 'not_run',
-              evidence: '',
-              createdAt: new Date().toISOString(),
-            },
-          })
-        ).record;
-      });
-      return c.json({ data: result }, 201);
-    });
-    router.post('/projects/:id/tasks/:taskId/result', async (c) => {
-      const projectId = id.parse(c.req.param('id'));
-      const taskId = id.parse(c.req.param('taskId'));
-      const input = z
-        .object({
-          revision: z.string().trim().min(1).max(160),
-          evidence: z.string().trim().min(100).max(100000),
-          executionStatus: z.enum(['completed', 'failed']),
-          // Only two conclusions exist; a Check that could not be evaluated is not passed.
-          conclusion: z.enum(['passed', 'failed']),
-        })
-        .strict()
-        .parse(await c.req.json());
-      const result = await db.transaction(async (conn) => {
-        const repo = conn.repository<Task>('qcTasks');
-        const task = await repo.findOne({ filter: { id: taskId, projectId } });
-        if (!task) throw new HTTPException(404, { message: 'TASK_NOT_FOUND' });
-        if (task.revision !== input.revision)
-          throw new HTTPException(409, { message: 'CONFLICT' });
-        if (
-          task.executionStatus === input.executionStatus &&
-          task.conclusion === input.conclusion &&
-          task.evidence === input.evidence
-        )
-          return task;
-        if (!['pending_dispatch', 'running'].includes(task.executionStatus))
-          throw new HTTPException(409, { message: 'CONFLICT' });
-        const updated = await repo.updateOne({
-          filter: {
-            id: taskId,
-            projectId,
-            executionStatus: task.executionStatus,
-          },
-          values: {
-            executionStatus: input.executionStatus,
-            conclusion: input.conclusion,
-            evidence: input.evidence,
-          },
-        });
-        return updated.record;
-      });
-      return c.json({ data: result });
     });
     // How a not-passed result of this Check is handled, and who reviews or handles it.
     router.post('/projects/:id/checks/:checkId/settings', async (c) => {
@@ -705,8 +739,15 @@ export default [
       return c.json({
         data: runs
           .sort((a, b) => b.key.localeCompare(a.key))
-          .map(({ steps: _steps, scope: _scope, ...run }) => ({
+          .map(({ steps: _steps, scope: _scope, plan, ...run }) => ({
             ...run,
+            displayStatus: displayStatus(run as Run),
+            // A started run knows how many results it waits for; an imported one is complete as imported.
+            expected:
+              plan?.length ?? results.filter((r) => r.runId === run.id).length,
+            pendingReview: results.filter(
+              (r) => r.runId === run.id && r.reviewStatus === 'pending',
+            ).length,
             passed: results.filter(
               (r) => r.runId === run.id && r.conclusion === 'passed',
             ).length,
@@ -729,7 +770,7 @@ export default [
       if (!run) throw new HTTPException(404, { message: 'RUN_NOT_FOUND' });
       return c.json({
         data: {
-          run,
+          run: { ...run, displayStatus: displayStatus(run) },
           results: await db
             .repository<Result>('qcResults')
             .findMany({ filter: { runId } }),
@@ -738,6 +779,133 @@ export default [
             .findMany({ filter: { runId } }),
         },
       });
+    });
+    // Whether starting a run also creates its NocoProject task; the browser shows how execution is triggered.
+    router.get('/execution', (c) =>
+      c.json({
+        data: {
+          nocoproject: nocoProjectConfigured(nocoProjectConfig()),
+          deadlineHours: nocoProjectConfig()?.deadlineHours ?? 12,
+        },
+      }),
+    );
+    // Creates the run's NocoProject task. A failure is kept on the run so it can be retried; the run stays started.
+    const dispatchRun = async (
+      projectId: number,
+      run: Run,
+      requestUrl: string,
+    ) => {
+      const config = nocoProjectConfig();
+      if (!nocoProjectConfigured(config)) return run;
+      const project = await db
+        .repository<Project>('qcProjects')
+        .findOne({ filter: { id: projectId } });
+      const values = await createNocoProjectTask(
+        config!,
+        runTaskRequest({
+          projectId,
+          projectName: project?.name ?? '',
+          runId: run.id,
+          runKey: run.key,
+          total: run.plan?.length ?? 0,
+          deadlineAt: run.deadlineAt ?? '',
+          link: runLink(requestUrl, projectId, run.id),
+        }),
+      ).then(
+        (task) => ({
+          externalTaskId: task.id,
+          externalTaskKey: task.key,
+          externalTaskUrl: task.url,
+          dispatchError: null,
+        }),
+        (error: unknown) => ({
+          dispatchError: (error instanceof Error
+            ? error.message
+            : String(error)
+          ).slice(0, 500),
+        }),
+      );
+      return (
+        await db
+          .repository<Run>('qcRuns')
+          .updateOne({ filter: { id: run.id }, values })
+      ).record;
+    };
+    router.post('/projects/:id/runs', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      z.object({})
+        .strict()
+        .parse(await c.req.json().catch(() => ({})));
+      const run = await startRun(
+        db,
+        projectId,
+        userId(c),
+        nocoProjectConfig()?.deadlineHours ?? 12,
+      );
+      const dispatched = await dispatchRun(projectId, run, c.req.url);
+      return c.json(
+        { data: { ...dispatched, displayStatus: displayStatus(dispatched) } },
+        201,
+      );
+    });
+    router.post('/projects/:id/runs/:runId/dispatch', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const runId = id.parse(c.req.param('runId'));
+      const run = await db
+        .repository<Run>('qcRuns')
+        .findOne({ filter: { id: runId, projectId } });
+      if (!run) throw new HTTPException(404, { message: 'RUN_NOT_FOUND' });
+      if (run.status !== 'running' || !run.plan)
+        throw new HTTPException(409, { message: 'RUN_FINISHED' });
+      if (run.externalTaskId)
+        throw new HTTPException(409, { message: 'ALREADY_DISPATCHED' });
+      if (!nocoProjectConfigured(nocoProjectConfig()))
+        throw new HTTPException(409, { message: 'NOCOPROJECT_NOT_CONFIGURED' });
+      const dispatched = await dispatchRun(projectId, run, c.req.url);
+      return c.json({
+        data: { ...dispatched, displayStatus: displayStatus(dispatched) },
+      });
+    });
+    // The executor reports one Check × object at a time; repeating a report replaces it.
+    router.post('/projects/:id/runs/:runId/results', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const runId = id.parse(c.req.param('runId'));
+      const input = resultReportSchema.parse(await c.req.json());
+      return c.json({
+        data: await recordResult(db, projectId, runId, input, userId(c)),
+      });
+    });
+    router.post(
+      '/projects/:id/runs/:runId/results/:resultId/review',
+      async (c) => {
+        const projectId = id.parse(c.req.param('id'));
+        const runId = id.parse(c.req.param('runId'));
+        const resultId = id.parse(c.req.param('resultId'));
+        const input = reviewSchema.parse(await c.req.json());
+        return c.json({
+          data: await reviewResult(
+            db,
+            projectId,
+            runId,
+            resultId,
+            input,
+            userId(c),
+          ),
+        });
+      },
+    );
+    router.post('/projects/:id/runs/:runId/finish', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const runId = id.parse(c.req.param('runId'));
+      const input = runFinishSchema.parse(await c.req.json().catch(() => ({})));
+      const run = await finishRun(
+        db,
+        app.container.resolve(notificationServiceToken),
+        projectId,
+        runId,
+        input,
+      );
+      return c.json({ data: { ...run, displayStatus: displayStatus(run) } });
     });
     router.get('/projects/:id/work-items', async (c) => {
       const projectId = id.parse(c.req.param('id'));
