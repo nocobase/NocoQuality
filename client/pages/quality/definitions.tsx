@@ -2,6 +2,7 @@ import { useTranslation } from '@nocobase/i18n/client';
 import { useState } from 'react';
 import { Archive, Plus, Undo2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import {
@@ -338,5 +339,84 @@ export function ArchivedCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// Includes or pauses every object in one category with a single switch; on only when all of them are included.
+export function GroupTestingSwitch({
+  detail,
+  objects,
+  label,
+  onChanged,
+}: {
+  detail: Detail;
+  objects: TestObject[];
+  label: string;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation();
+  const { submit, busy, error } = useSubmission();
+  const on = objects.filter((o) => !o.testingPaused).length;
+  return (
+    <span className='inline-flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-1.5'>
+      {error && <span className='text-xs text-destructive'>{error}</span>}
+      <span className='text-xs tabular-nums text-muted-foreground'>
+        {t('qc.groupTesting', { on, total: objects.length })}
+      </span>
+      <Switch
+        checked={on === objects.length}
+        disabled={busy}
+        aria-label={t('qc.groupTestingToggle', { name: label })}
+        onCheckedChange={(next) =>
+          void submit(
+            'quality/projects/' + detail.project.id + '/objects/testing',
+            { objectIds: objects.map((o) => o.id), enabled: next },
+            onChanged,
+          )
+        }
+      />
+    </span>
+  );
+}
+// Includes an object in full runs or leaves it out while its feature is still being developed.
+export function ObjectTestingSwitch({
+  detail,
+  object,
+  onChanged,
+}: {
+  detail: Detail;
+  object: TestObject;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation();
+  const { submit, busy, error } = useSubmission();
+  const enabled = !object.testingPaused;
+  return (
+    <span className='inline-flex shrink-0 items-center gap-2'>
+      {error && <span className='text-xs text-destructive'>{error}</span>}
+      <span
+        className={
+          'text-xs ' + (enabled ? 'text-foreground' : 'text-muted-foreground')
+        }
+      >
+        {t(enabled ? 'qc.testing' : 'qc.paused')}
+      </span>
+      <Switch
+        checked={enabled}
+        disabled={busy}
+        aria-label={t('qc.includeInTesting', { name: object.name })}
+        onCheckedChange={(next) =>
+          void submit(
+            'quality/projects/' +
+              detail.project.id +
+              '/objects/' +
+              object.id +
+              '/testing',
+            { enabled: next },
+            onChanged,
+          )
+        }
+      />
+    </span>
   );
 }

@@ -117,3 +117,25 @@ export function runProgress(run: Run, results: readonly Result[]) {
 export function time(value?: string | null) {
   return value ? new Date(value).toLocaleString() : '—';
 }
+
+// The latest run's conclusion for a Check (on one object, or across all its objects).
+export function latestConclusion(
+  results: readonly Result[] | undefined,
+  checkId: number,
+  objectId?: number,
+) {
+  const rows = (results ?? []).filter(
+    (r) =>
+      r.checkId === checkId &&
+      (objectId === undefined || r.objectId === objectId),
+  );
+  if (!rows.length) return 'not_run';
+  return rows.some((r) => r.conclusion === 'failed') ? 'failed' : 'passed';
+}
+export function latestVersion(detail: Detail, checkId: number) {
+  return Math.max(
+    ...detail.standards
+      .filter((s) => s.checkId === checkId)
+      .map((s) => s.version),
+  );
+}
