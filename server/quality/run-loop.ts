@@ -174,9 +174,11 @@ async function findRun(conn: Conn, projectId: number, runId: number) {
   return run;
 }
 
-// Keeps the one to-do of a run result in step with it: a review to-do while a person must confirm it,
-// a PR review or manual to-do while it fails, and done (by the system) once it passes or is skipped.
-// A to-do someone already marked done stays done.
+// Keeps one to-do per Check × object in step with its results: a review to-do while a person must confirm a result,
+// a PR review or manual to-do while it fails, and done (by the system) once the result it tracks passes or is
+// skipped. A later run that fails a pair with an open to-do updates that to-do (lastRunId, lastResultId, occurrences)
+// instead of adding another, and keeps its PR when the new result brings none. A to-do someone marked done stays done;
+// the next failure of that pair opens a new one.
 async function syncWorkItem(
   conn: Conn,
   run: Run,
@@ -194,17 +196,35 @@ async function syncWorkItem(
     .exists({ filter: { checkId: result.checkId, objectId: result.objectId } });
   const skipped =
     !check?.active || !object?.active || object.testingPaused || excluded;
+  const repo = conn.repository<WorkItem>('qcWorkItems');
+  // The to-do this result already belongs to: raised by it, or last updated by it.
+  const own =
+    (await repo.findOne({ filter: { resultId: result.id } })) ??
+    (await repo.findOne({ filter: { lastResultId: result.id } }));
+  // An open to-do for the same pair from an earlier result, which this result continues.
+  const open = own
+    ? undefined
+    : (
+        await repo.findMany({
+          filter: {
+            projectId: run.projectId,
+            source: 'run',
+            checkId: result.checkId,
+            objectId: result.objectId,
+            status: 'open',
+          },
+        })
+      ).sort((x, y) => y.id - x.id)[0];
+  const prUrl = result.prUrl ?? own?.prUrl ?? open?.prUrl ?? null;
   const kind: WorkItem['kind'] | null = skipped
     ? null
     : result.reviewStatus === 'pending'
       ? 'review'
       : result.conclusion === 'failed'
-        ? result.prUrl
+        ? prUrl
           ? 'pr_review'
           : 'manual'
         : null;
-  const repo = conn.repository<WorkItem>('qcWorkItems');
-  const existing = await repo.findOne({ filter: { resultId: result.id } });
   const now = new Date().toISOString();
   if (kind) {
     const values = {
@@ -215,19 +235,36 @@ async function syncWorkItem(
         ' · ' +
         object!.name,
       assigneeId: check!.assigneeId || run.triggeredBy || actor,
-      prUrl: result.prUrl ?? null,
-      prState: result.prUrl ? 'open' : null,
-    } as const;
-    if (!existing)
+      prUrl,
+      ...(result.prUrl ? { prState: 'open' as const } : {}),
+      lastRunId: run.id,
+      lastResultId: result.id,
+      lastSeenAt: now,
+    };
+    if (own) {
+      if (own.status === 'open')
+        await repo.updateOne({ filter: { id: own.id }, values });
+    } else if (open)
+      await repo.updateOne({
+        filter: { id: open.id },
+        values: {
+          ...values,
+          occurrences: (open.occurrences ?? 1) + 1,
+          prState: result.prUrl ? 'open' : open.prState,
+        },
+      });
+    else
       await repo.createOne({
         values: {
           ...values,
+          prState: prUrl ? 'open' : null,
           projectId: run.projectId,
           source: 'run',
           runId: run.id,
           resultId: result.id,
           checkId: result.checkId,
           objectId: result.objectId,
+          occurrences: 1,
           status: 'open',
           createdAt: now,
           createdBy: actor,
@@ -235,11 +272,9 @@ async function syncWorkItem(
           doneBy: null,
         },
       });
-    else if (existing.status === 'open')
-      await repo.updateOne({ filter: { id: existing.id }, values });
-  } else if (existing?.status === 'open')
+  } else if (own?.status === 'open')
     await repo.updateOne({
-      filter: { id: existing.id },
+      filter: { id: own.id },
       values: { status: 'done', doneAt: now, doneBy: 'system' },
     });
 }

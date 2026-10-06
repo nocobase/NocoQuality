@@ -360,6 +360,68 @@ describe('starting and filling a run', () => {
   });
 });
 
+describe('one to-do per Check × object across runs', () => {
+  // Runs the shared Check on object 1 once per call and returns the run id.
+  async function runOnce(
+    request: Awaited<ReturnType<typeof setup>>['request'],
+    body: Record<string, unknown>,
+  ) {
+    const started = (await (
+      await request('POST', '/projects/1/runs', {})
+    ).json()) as { data: { id: number } };
+    const runId = started.data.id;
+    await request('POST', `/projects/1/runs/${runId}/results`, {
+      ...report(1, 1, 'failed'),
+      ...body,
+    });
+    await request('POST', `/projects/1/runs/${runId}/finish`, {});
+    return runId;
+  }
+
+  it('updates the open to-do when a later run fails the same pair, keeping its PR', async () => {
+    const { request, tables } = await setup();
+    await runOnce(request, { prUrl: 'https://github.com/o/r/pull/1' });
+    const second = await runOnce(request, { note: 'another way to fix it' });
+    const items = tables.get('qcWorkItems')!;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: 'pr_review',
+      prUrl: 'https://github.com/o/r/pull/1',
+      occurrences: 2,
+      lastRunId: second,
+      runId: 1,
+      status: 'open',
+    });
+    // The later run lists the to-do it continued.
+    const detail = (await (
+      await request('GET', `/projects/1/runs/${second}`)
+    ).json()) as { data: { workItems: { id: number }[] } };
+    expect(detail.data.workItems.map((i) => i.id)).toEqual([items[0]!.id]);
+    // The to-do shows every result of its pair, newest first.
+    const opened = (await (
+      await request('GET', `/projects/1/work-items/${items[0]!.id}`)
+    ).json()) as { data: { history: { runId: number; note: string }[] } };
+    expect(opened.data.history.map((h) => h.runId)).toEqual([second, 1]);
+  });
+
+  it('leaves the to-do open when a later run passes, and opens a new one after it was marked done', async () => {
+    const { request, tables } = await setup();
+    await runOnce(request, {});
+    await runOnce(request, { conclusion: 'passed' });
+    expect(tables.get('qcWorkItems')).toMatchObject([
+      { status: 'open', occurrences: 1 },
+    ]);
+    await request('POST', '/projects/1/work-items/complete', { ids: [1] });
+    await runOnce(request, {});
+    expect(
+      tables.get('qcWorkItems')!.map((i) => [i.status, i.occurrences]),
+    ).toEqual([
+      ['done', 1],
+      ['open', 1],
+    ]);
+  });
+});
+
 describe('dispatching a run to NocoProject', () => {
   it('creates one task with the run link and keeps a failure for retry', async () => {
     const calls: { url: string; init: RequestInit }[] = [];

@@ -1,4 +1,4 @@
-import type { Check, Detail, Result, Run } from './types.js';
+import type { Check, Detail, Result, Run, WorkItem } from './types.js';
 
 export type Tone = 'good' | 'warn' | 'bad' | 'muted' | 'primary';
 
@@ -137,5 +137,12 @@ export function latestVersion(detail: Detail, checkId: number) {
     ...detail.standards
       .filter((s) => s.checkId === checkId)
       .map((s) => s.version),
+  );
+}
+
+// The to-do that covers a result: the one it raised, or the earlier one it continued.
+export function itemForResult(items: readonly WorkItem[], result: Result) {
+  return items.find(
+    (i) => i.resultId === result.id || i.lastResultId === result.id,
   );
 }

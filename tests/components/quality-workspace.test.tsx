@@ -632,4 +632,66 @@ describe('quality workspace', () => {
       ),
     );
   });
+  it('shows how many runs a to-do has failed in and the result of each run', async () => {
+    const item = {
+      id: 80,
+      source: 'run',
+      runId: 81,
+      resultId: 82,
+      lastRunId: 83,
+      lastResultId: 84,
+      occurrences: 2,
+      checkId: 14,
+      objectId: 12,
+      kind: 'pr_review',
+      title: '充值消费 · 饭卡',
+      assigneeId: 'u1',
+      prUrl: 'https://github.com/o/r/pull/9',
+      prState: 'open',
+      status: 'open',
+      createdAt: '2026-10-05T10:00:00Z',
+      runKey: '2026-10-06-01',
+    };
+    const history = [
+      {
+        id: 84,
+        runId: 83,
+        runKey: '2026-10-06-01',
+        startedAt: '2026-10-06T10:00:00Z',
+        conclusion: 'failed',
+        note: '换一种改法：补充示例',
+        prUrl: null,
+      },
+      {
+        id: 82,
+        runId: 81,
+        runKey: '2026-10-05-01',
+        startedAt: '2026-10-05T10:00:00Z',
+        conclusion: 'failed',
+        note: '缺少对账说明',
+        prUrl: 'https://github.com/o/r/pull/9',
+      },
+    ];
+    api.request.mockImplementation(async ({ path }: { path: string }) => ({
+      data:
+        path === 'quality/projects'
+          ? [detail.project]
+          : path === 'quality/users'
+            ? [{ id: 'u1', name: '测试负责人' }]
+            : path.endsWith('/work-items/80')
+              ? { item, result: null, run: null, history }
+              : path.includes('/work-items')
+                ? [item]
+                : path.endsWith('/runs')
+                  ? []
+                  : structuredClone(detail),
+    }));
+    const user = userEvent.setup();
+    show('todo');
+    expect(await screen.findByText('qc.occurrences')).toBeVisible();
+    await user.click(screen.getByText('充值消费 · 饭卡'));
+    expect(await screen.findByText('qc.runHistory')).toBeVisible();
+    expect(screen.getByText('换一种改法：补充示例')).toBeVisible();
+    expect(screen.getByText('2026-10-05-01')).toBeVisible();
+  });
 });

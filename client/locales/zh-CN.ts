@@ -353,6 +353,8 @@ const zhCN: AppResource = {
     restored: '已恢复。',
     objectArchivedFirst: '先恢复所属对象',
     noDimensionChecks: '尚无 Check',
+    occurrences: '已出现 {{count}} 轮',
+    runHistory: '各轮结果',
     category: {
       installation: '应用安装',
       deployment: '应用部署',
