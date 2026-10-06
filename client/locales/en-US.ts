@@ -5,8 +5,6 @@ const enUS = {
   qc: {
     allCategories: 'All categories',
     actualEvidence: 'Execution report and evidence',
-    reviewNote:
-      'Agent findings and recommendations require human review before becoming official scores.',
     executionStatus: {
       pending_dispatch: 'Pending dispatch',
       running: 'Running',
@@ -68,8 +66,6 @@ const enUS = {
     newVersion: 'Publish new version',
     createTask: 'Create check task',
     standardVersion: 'Standard version',
-    humanRequired: 'Human review required',
-    humanOptional: 'Human review optional',
     versionNote:
       'Published versions are retained. Changes create a new version; existing tasks keep their original version.',
     history: 'Related tasks',
@@ -95,7 +91,7 @@ const enUS = {
       'Features, builds, upgrades and business flows can all be test objects.',
     clearFilters: 'Clear filters',
     coverageLegend:
-      'Not run: Checks exist without results. No Checks defined: applicable but no standard yet. Not applicable: outside this object’s evaluation scope.',
+      'Not run: automated Checks exist without results. Human Checks are not run; their state is kept by hand here. No Checks defined: applicable but no standard yet. Not applicable: outside this object’s evaluation scope.',
     searchChecks: 'Search Checks…',
     dimension: 'Dimension',
     noChecks: 'No Checks yet',
@@ -223,7 +219,8 @@ const enUS = {
     runSteps: 'Preparation and execution steps',
     stepFailed: 'Failed',
     runResults: 'Results',
-    scoreRule: 'Score = 10 × passed ÷ enabled Checks',
+    scoreRule:
+      'Score = 10 × (automated Checks passed + human Checks reviewed) ÷ enabled Checks',
     onlyFailed: 'Only not passed',
     viewPr: 'View PR',
     showEvidence: 'Show evidence',
@@ -248,6 +245,10 @@ const enUS = {
       'An Agent opens a PR that someone reviews, or the result goes to a person to handle.',
     fixModeLabel: 'Handling',
     fixMode: { pr: 'Agent opens a PR', assign: 'Assign to a person' },
+    fixModeHint: {
+      pr: 'An Agent opens a PR and the owner reviews it.',
+      assign: 'The result goes to the owner to handle.',
+    },
     reviewer: 'PR reviewer',
     handler: 'Handled by',
     assigneeDefault: 'Whoever imports the run',
@@ -303,9 +304,9 @@ const enUS = {
     now: {
       noRunTitle: 'Nothing has run yet',
       noRunBody:
-        'Once a run starts, the executor reports each result. This page then shows what failed, what awaits review and which PRs need review.',
+        'Once a run starts, the executor reports each result. This page then shows what failed, which human Checks still need a review and which PRs need review.',
       failed: 'Not passed',
-      pendingReview: 'Awaiting review',
+      manualPending: 'Human Checks to review',
       openPrs: 'PRs to review',
       myTodo: 'My to-dos',
       notRun: 'Not run',
@@ -327,14 +328,44 @@ const enUS = {
     },
     skippedCount:
       '{{count}} not-passed results made no to-do (judged by current settings)',
-    reviewPending: 'Awaiting review',
-    reviewConfirmed: 'Reviewed',
-    reviewHint:
-      'The Agent reported "{{conclusion}}". It counts toward the score once confirmed.',
-    confirmPassed: 'Confirm passed',
-    confirmFailed: 'Confirm not passed',
-    reviewNoteLabel: 'Review note (optional)',
     reviewedBy: 'Reviewed by {{name}} at {{at}}',
+    checkKind: 'Kind',
+    checkKindName: { automated: 'Automated', human: 'Human' },
+    checkKindHint: {
+      automated:
+        'Runs in every run. Its conclusion takes effect directly; a failure goes to a PR or a person.',
+      human:
+        'Not run. A person keeps its state on each object: not reviewed, reviewed or needs re-review.',
+    },
+    stepsOptional: 'Steps · How to review (optional)',
+    manual: {
+      title: 'Human Checks',
+      hint: 'Not run. Not reviewed and needs re-review count as not passed.',
+      status: {
+        unreviewed: 'Not reviewed',
+        reviewed: 'Reviewed',
+        rereview: 'Needs re-review',
+      },
+      statusLabel: 'State',
+      note: 'Note (optional), such as a link to the review record',
+      update: 'Update',
+      history: 'History',
+      hideHistory: 'Hide history',
+      noHistory: 'Never changed: not reviewed.',
+      changed: '{{name}} · {{at}}',
+      pending: 'Human to review {{count}}',
+      owner: 'Owner',
+      batch: 'Edit human states',
+      batchHint:
+        'Select cells, then set one state for the human Checks in them.',
+      batchCheck: 'Human Check',
+      batchAll: 'All human Checks in the selected cells',
+      selectCell: 'Select {{object}} · {{dimension}}',
+      selected: '{{cells}} cells · {{pairs}} human Checks',
+      apply: 'Apply',
+      done: 'Done',
+      applied: 'Updated {{count}} human Check states.',
+    },
     judgeLabel: 'Judged by',
     judgeMode: {
       script: 'Script',
@@ -348,7 +379,7 @@ const enUS = {
       agent: 'The Agent that executes the Check decides.',
       session:
         'A separate session reads the evidence against the standard, without the execution context.',
-      human: 'Execution only collects evidence; a person decides.',
+      human: 'Not run; a person keeps its state on each object.',
     },
     command: 'Entry point (script command)',
     commandHint: 'Required when a script decides.',

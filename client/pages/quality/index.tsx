@@ -23,7 +23,7 @@ import { activeApplicability } from './model.js';
 import { Overview } from './overview.js';
 import { Choice, Empty } from './form.js';
 import { ArchivedCard, CheckEditForm, ObjectEditForm } from './definitions.js';
-import { ReportText, SectionTitle, StatusBadge } from './ui.js';
+import { CheckConclusion, ReportText, SectionTitle } from './ui.js';
 import { CheckSettings, RunList, RunView, WorkItemsView } from './runs.js';
 import { useLatestRun } from './use-quality-data.js';
 import { Coverage } from './coverage.js';
@@ -35,7 +35,6 @@ import {
   WorkItemForm,
 } from './editors.js';
 import { GroupTestingSwitch, ObjectTestingSwitch } from './definitions.js';
-import { latestConclusion } from './model.js';
 
 export default function QualityPage() {
   const api = useApiClient();
@@ -604,25 +603,28 @@ export default function QualityPage() {
                         variant='outline'
                         className={
                           'qc-tone ' +
-                          (standard.humanReview
+                          (standard.judgeMode === 'human'
                             ? 'qc-tone-warn'
                             : 'qc-tone-muted')
                         }
                       >
                         {t(
-                          standard.humanReview
-                            ? 'qc.humanRequired'
-                            : 'qc.humanOptional',
+                          'qc.checkKindName.' +
+                            (standard.judgeMode === 'human'
+                              ? 'human'
+                              : 'automated'),
                         )}
                       </Badge>
-                      <Badge
-                        variant='outline'
-                        className='qc-tone qc-tone-muted'
-                        title={t('qc.judgeHint.' + standard.judgeMode)}
-                      >
-                        {t('qc.judgeLabel')} ·{' '}
-                        {t('qc.judgeMode.' + standard.judgeMode)}
-                      </Badge>
+                      {standard.judgeMode !== 'human' && (
+                        <Badge
+                          variant='outline'
+                          className='qc-tone qc-tone-muted'
+                          title={t('qc.judgeHint.' + standard.judgeMode)}
+                        >
+                          {t('qc.judgeLabel')} ·{' '}
+                          {t('qc.judgeMode.' + standard.judgeMode)}
+                        </Badge>
+                      )}
                     </div>
                     <h2 className='text-2xl font-semibold tracking-tight'>
                       {check.name}
@@ -735,9 +737,10 @@ export default function QualityPage() {
                       title={t('qc.latestResult')}
                       description={latest?.run.key ?? t('qc.latestRunEmpty')}
                     />
-                    <StatusBadge
-                      kind='result'
-                      value={latestConclusion(latest?.results, check.id)}
+                    <CheckConclusion
+                      detail={detail}
+                      check={check}
+                      results={latest?.results}
                     />
                   </CardContent>
                 </Card>

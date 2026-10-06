@@ -7,7 +7,7 @@ import {
   GitPullRequest,
   History,
   ListChecks,
-  ScanEye,
+  UserRoundCheck,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
@@ -23,7 +23,14 @@ import type {
   WorkItem,
 } from './types.js';
 import { useRequest } from './use-quality-data.js';
-import { itemForResult, runProgress, skipReason, time } from './model.js';
+import {
+  isManual,
+  itemForResult,
+  manualPairs,
+  runProgress,
+  skipReason,
+  time,
+} from './model.js';
 import { SectionTitle } from './ui.js';
 import {
   RunDispatch,
@@ -37,14 +44,10 @@ type Go = (view: string, extra?: Record<string, string>) => void;
 const pairKey = (r: Pick<Result, 'checkId' | 'objectId'>) =>
   r.checkId + ':' + r.objectId;
 
-// What changed between two runs, by Check × object; results still awaiting review are left out.
+// What changed between two runs, by Check × object.
 function compareRuns(current: readonly Result[], previous: readonly Result[]) {
-  const before = new Map(
-    previous
-      .filter((r) => r.reviewStatus !== 'pending')
-      .map((r) => [pairKey(r), r.conclusion]),
-  );
-  const now = current.filter((r) => r.reviewStatus !== 'pending');
+  const before = new Map(previous.map((r) => [pairKey(r), r.conclusion]));
+  const now = current;
   return {
     newlyFailed: now.filter(
       (r) => r.conclusion === 'failed' && before.get(pairKey(r)) !== 'failed',
@@ -58,7 +61,8 @@ function compareRuns(current: readonly Result[], previous: readonly Result[]) {
   };
 }
 
-// The current run first: what failed, what waits for a person, and what changed since the previous run.
+// The current run first: what failed, which human-judged Checks wait for a person, and what changed since the
+// previous run.
 export function Overview({
   detail,
   go,
@@ -118,16 +122,18 @@ export function Overview({
       </Card>
     );
   if (!latest) return <Skeleton className='h-72 w-full' />;
-  const { run, results, workItems } = latest;
-  const failed = results.filter(
-    (r) => r.conclusion === 'failed' && r.reviewStatus !== 'pending',
+  const { run, workItems } = latest;
+  // Results an older run reported for a Check that is human-judged now no longer count.
+  const results = latest.results.filter((r) => !isManual(detail, r.checkId));
+  const failed = results.filter((r) => r.conclusion === 'failed');
+  const manualPending = manualPairs(detail).filter(
+    (m) => m.status !== 'reviewed',
   );
-  const pending = results.filter((r) => r.reviewStatus === 'pending');
   const openPrs = (items ?? []).filter(
     (i) => i.status === 'open' && i.kind === 'pr_review',
   );
   const myOpen = (mine ?? []).filter((i) => i.status === 'open');
-  const { done, total } = runProgress(run, results);
+  const { done, total } = runProgress(run, latest.results);
   const notRun = total - done;
   const name = (r: Result) =>
     (detail.checks.find((c) => c.id === r.checkId)?.name ?? '#' + r.checkId) +
@@ -150,11 +156,11 @@ export function Overview({
       onClick: () => go('run', { record: String(run.id), failed: '1' }),
     },
     {
-      key: 'pendingReview',
-      value: pending.length,
-      tone: pending.length ? 'warn' : 'muted',
-      Icon: ScanEye,
-      onClick: () => go('todo'),
+      key: 'manualPending',
+      value: manualPending.length,
+      tone: manualPending.length ? 'warn' : 'muted',
+      Icon: UserRoundCheck,
+      onClick: () => go('coverage'),
     },
     {
       key: 'openPrs',
@@ -171,7 +177,12 @@ export function Overview({
       onClick: () => go('todo'),
     },
   ] as const;
-  const diff = previous ? compareRuns(results, previous.results) : null;
+  const diff = previous
+    ? compareRuns(
+        results,
+        previous.results.filter((r) => !isManual(detail, r.checkId)),
+      )
+    : null;
   return (
     <>
       <Card className='qc-card overflow-hidden'>
@@ -185,7 +196,7 @@ export function Overview({
                 {run.finishedAt ? ' → ' + time(run.finishedAt) : ''}
               </span>
             </div>
-            <RunProgress run={run} results={results} />
+            <RunProgress run={run} results={latest.results} />
             <RunDispatch detail={detail} run={run} onChanged={onChanged} />
           </div>
           <div className='flex flex-wrap items-start gap-2 lg:flex-col lg:items-end'>

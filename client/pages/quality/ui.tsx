@@ -6,9 +6,16 @@ import {
   CircleX,
   Clock3,
   LoaderCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import type { Tone } from './model.js';
+import type { Check, Detail, Result } from './types.js';
+import {
+  isManual,
+  latestConclusion,
+  manualSummary,
+  type Tone,
+} from './model.js';
 
 const executionMeta: Record<string, [Tone, typeof Clock3]> = {
   pending_dispatch: ['muted', Clock3],
@@ -21,27 +28,58 @@ const resultMeta: Record<string, [Tone, typeof Clock3]> = {
   passed: ['good', CircleCheck],
   failed: ['bad', CircleX],
 };
+const manualMeta: Record<string, [Tone, typeof Clock3]> = {
+  unreviewed: ['muted', CircleDashed],
+  reviewed: ['good', CircleCheck],
+  rereview: ['warn', RotateCcw],
+};
+const metaOf = {
+  execution: executionMeta,
+  result: resultMeta,
+  manual: manualMeta,
+};
+const labelOf = {
+  execution: 'qc.executionStatus.',
+  result: 'qc.resultStatus.',
+  manual: 'qc.manual.status.',
+};
 
 export function StatusBadge({
   kind,
   value,
 }: {
-  kind: 'execution' | 'result';
+  kind: 'execution' | 'result' | 'manual';
   value: string;
 }) {
   const { t } = useTranslation();
-  const [tone, Icon] = (kind === 'execution' ? executionMeta : resultMeta)[
-    value
-  ] || ['muted', CircleDashed];
+  const [tone, Icon] = metaOf[kind][value] || ['muted', CircleDashed];
   return (
     <Badge variant='outline' className={'qc-tone qc-tone-' + tone}>
       <Icon />
-      {t(
-        'qc.' +
-          (kind === 'execution' ? 'executionStatus.' : 'resultStatus.') +
-          value,
-      )}
+      {t(labelOf[kind] + value)}
     </Badge>
+  );
+}
+
+// Where a Check stands: the latest run's conclusion, or the state a person keeps for a human-judged Check.
+export function CheckConclusion({
+  detail,
+  check,
+  results,
+  objectId,
+}: {
+  detail: Detail;
+  check: Check;
+  results: readonly Result[] | undefined;
+  objectId?: number;
+}) {
+  return isManual(detail, check.id) ? (
+    <StatusBadge kind='manual' value={manualSummary(detail, check, objectId)} />
+  ) : (
+    <StatusBadge
+      kind='result'
+      value={latestConclusion(results, check.id, objectId)}
+    />
   );
 }
 
@@ -86,11 +124,13 @@ function Inline({ text }: { text: string }) {
     <>
       {parts.map((part, i) =>
         part.startsWith('**') && part.endsWith('**') ? (
+          // eslint-disable-next-line @eslint-react/no-array-index-key -- parts of one fixed line, never reordered
           <strong key={i} className='font-semibold text-foreground'>
             {part.slice(2, -2)}
           </strong>
         ) : part.startsWith('`') && part.endsWith('`') ? (
           <code
+            // eslint-disable-next-line @eslint-react/no-array-index-key -- parts of one fixed line, never reordered
             key={i}
             className='rounded bg-muted px-1 font-mono text-[0.85em]'
           >
@@ -129,6 +169,7 @@ export function ReportText({ text }: { text: string }) {
           }
         >
           {list.items.map((item, i) => (
+            // eslint-disable-next-line @eslint-react/no-array-index-key -- list items of a fixed report, never reordered
             <li key={i + item}>
               <Inline text={item} />
             </li>

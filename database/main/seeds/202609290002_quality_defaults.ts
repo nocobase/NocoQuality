@@ -1,4 +1,5 @@
 // Repository records are intentionally narrowed here because seed data is fixed installation content.
+/* eslint-disable -- fixed installation content, untyped on purpose (see above) */
 // @ts-nocheck
 import { defineSeed } from '@nocobase/db';
 
@@ -94,7 +95,6 @@ export default defineSeed({
           '1. 执行认证接口成功请求。\n2. 执行无效凭据请求。\n3. 核对状态码、响应结构和日志。',
         passCriteria: '成功和失败边界均符合标准，证据可复核。',
         evidence: '请求与响应、测试日志、目标提交。',
-        humanReview: true,
       },
     });
   },

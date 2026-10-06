@@ -4,11 +4,15 @@ import {
   finishRun,
   recordResult,
   resultReportSchema,
-  reviewResult,
-  reviewSchema,
   runFinishSchema,
   startRun,
 } from '../quality/run-loop.js';
+import {
+  listManualStates,
+  manualStateHistory,
+  manualStateSchema,
+  setManualStates,
+} from '../quality/manual-states.js';
 import {
   createNocoProjectTask,
   nocoProjectConfigured,
@@ -54,16 +58,27 @@ const standardSchema = z
   .object({
     definition: text,
     preconditions: text,
-    steps: text,
+    // A human-judged Check is not run, so it needs no steps.
+    steps: z.string().trim().max(10000),
     passCriteria: text,
     evidence: text,
-    humanReview: z.boolean(),
     judgeMode: z.enum(['script', 'agent', 'session', 'human']).default('agent'),
     command: z.string().trim().max(2000).nullable().optional(),
   })
   .strict();
-// A script-judged Check must say which script decides it.
-function assertJudge(standard: { judgeMode: string; command?: string | null }) {
+// An automated Check says how it runs, and a script-judged one which script decides it. A human-judged Check keeps
+// no script.
+function assertJudge(standard: {
+  judgeMode: string;
+  steps: string;
+  command?: string | null;
+}) {
+  if (standard.judgeMode === 'human') {
+    standard.command = null;
+    return;
+  }
+  if (!standard.steps)
+    throw new HTTPException(400, { message: 'STEPS_REQUIRED' });
   if (standard.judgeMode === 'script' && !standard.command)
     throw new HTTPException(400, { message: 'COMMAND_REQUIRED' });
 }
@@ -283,9 +298,15 @@ export default [
           .repository<CheckExclusion>('qcCheckExclusions')
           .findMany({ filter: { projectId } })
       ).filter((row) => activeCheckIds.has(row.checkId));
+      // The current state of each human-judged Check × object; a pair without one is unreviewed.
+      const manualStates = (await listManualStates(db, projectId)).filter(
+        (row) =>
+          activeCheckIds.has(row.checkId) && activeObjectIds.has(row.objectId),
+      );
       return c.json({
         data: {
           exclusions,
+          manualStates,
           project,
           // TM3 is a separate system; its imported snapshot stays stored but is no longer part of the workspace.
           objects: objects.map(
@@ -661,8 +682,12 @@ export default [
     router.post('/projects/:id/checks/:checkId/versions', async (c) => {
       const projectId = id.parse(c.req.param('id'));
       const checkId = id.parse(c.req.param('checkId'));
-      const { baseVersion, ...standard } = standardSchema
-        .extend({ baseVersion: id })
+      // How a not-passed result is handled can change with the version that makes the Check automated.
+      const { baseVersion, fixMode, ...standard } = standardSchema
+        .extend({
+          baseVersion: id,
+          fixMode: z.enum(['pr', 'assign']).optional(),
+        })
         .strict()
         .parse(await c.req.json());
       assertJudge(standard);
@@ -679,6 +704,11 @@ export default [
         const current = Math.max(...versions.map((v) => v.version));
         if (current !== baseVersion)
           throw new HTTPException(409, { message: 'STANDARD_CHANGED' });
+        if (fixMode)
+          await conn.repository<Check>('qcChecks').updateOne({
+            filter: { id: checkId, projectId },
+            values: { fixMode },
+          });
         return (
           await conn.repository<Standard>('qcStandards').createOne({
             values: {
@@ -759,9 +789,6 @@ export default [
             // A started run knows how many results it waits for; an imported one is complete as imported.
             expected:
               plan?.length ?? results.filter((r) => r.runId === run.id).length,
-            pendingReview: results.filter(
-              (r) => r.runId === run.id && r.reviewStatus === 'pending',
-            ).length,
             passed: results.filter(
               (r) => r.runId === run.id && r.conclusion === 'passed',
             ).length,
@@ -900,25 +927,6 @@ export default [
         data: await recordResult(db, projectId, runId, input, userId(c)),
       });
     });
-    router.post(
-      '/projects/:id/runs/:runId/results/:resultId/review',
-      async (c) => {
-        const projectId = id.parse(c.req.param('id'));
-        const runId = id.parse(c.req.param('runId'));
-        const resultId = id.parse(c.req.param('resultId'));
-        const input = reviewSchema.parse(await c.req.json());
-        return c.json({
-          data: await reviewResult(
-            db,
-            projectId,
-            runId,
-            resultId,
-            input,
-            userId(c),
-          ),
-        });
-      },
-    );
     router.post('/projects/:id/runs/:runId/finish', async (c) => {
       const projectId = id.parse(c.req.param('id'));
       const runId = id.parse(c.req.param('runId'));
@@ -931,6 +939,30 @@ export default [
         input,
       );
       return c.json({ data: { ...run, displayStatus: displayStatus(run) } });
+    });
+    // Human-judged Checks: the current state of every pair, one pair's history, and setting several pairs at once.
+    router.get('/projects/:id/manual-states', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const checkId = c.req.query('checkId');
+      const objectId = c.req.query('objectId');
+      if (checkId || objectId)
+        return c.json({
+          data: await manualStateHistory(
+            db,
+            projectId,
+            id.parse(checkId),
+            id.parse(objectId),
+          ),
+        });
+      return c.json({ data: await listManualStates(db, projectId) });
+    });
+    router.post('/projects/:id/manual-states', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const input = manualStateSchema.parse(await c.req.json());
+      return c.json(
+        { data: await setManualStates(db, projectId, input, userId(c)) },
+        201,
+      );
     });
     router.get('/projects/:id/work-items', async (c) => {
       const projectId = id.parse(c.req.param('id'));
@@ -1054,7 +1086,6 @@ export default [
                   runKey: of?.key ?? '',
                   startedAt: of?.startedAt ?? '',
                   conclusion: r.conclusion,
-                  reviewStatus: r.reviewStatus,
                   note: r.note,
                   prUrl: r.prUrl,
                 };

@@ -75,14 +75,27 @@ export interface Standard {
   steps: string;
   passCriteria: string;
   evidence: string;
-  humanReview: boolean;
   published: boolean;
-  // Who decides the conclusion: a script, the executing Agent, a separate session, or a person.
+  // Who decides the conclusion: a script, the executing Agent or a separate session; human means the Check is not
+  // run and a person keeps its state for each object.
   judgeMode: JudgeMode;
   // The script a script-judged Check runs; empty for the other modes.
   command: string | null;
 }
 export type JudgeMode = 'script' | 'agent' | 'session' | 'human';
+export type ManualStatus = 'unreviewed' | 'reviewed' | 'rereview';
+// One change to the state of a human-judged Check on one object; the latest row is the current state.
+export interface ManualState {
+  id: number;
+  projectId: number;
+  checkId: number;
+  objectId: number;
+  status: ManualStatus;
+  // Why it changed, often a link to the review record.
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
 // An object that turned off one shared Check; absence means the Check applies.
 export interface CheckExclusion {
   id: number;
@@ -138,8 +151,8 @@ export interface Result {
   evidence: string | null;
   evidencePath: string | null;
   prUrl: string | null;
-  // pending until a person confirms a result whose standard requires review; null when none is required.
-  reviewStatus: 'pending' | 'confirmed' | null;
+  // History of the removed human review of results: confirmed when a person reviewed it, otherwise null.
+  reviewStatus: 'confirmed' | null;
   reportedConclusion: 'passed' | 'failed' | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -164,6 +177,7 @@ export interface WorkItem {
   prState: 'open' | 'merged' | 'closed' | null;
   prSyncedAt: string | null;
   createdBy: string | null;
+  // review is kept by to-dos from the removed human review of results.
   kind: 'pr_review' | 'manual' | 'review';
   title: string;
   assigneeId: string;
