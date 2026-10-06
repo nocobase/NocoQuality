@@ -754,10 +754,13 @@ export default [
             failed: results.filter(
               (r) => r.runId === run.id && r.conclusion === 'failed',
             ).length,
+            // A to-do continued by a later run counts toward the run that last saw it.
             openItems: items.filter(
-              (i) => i.runId === run.id && i.status === 'open',
+              (i) => (i.lastRunId ?? i.runId) === run.id && i.status === 'open',
             ).length,
-            prs: items.filter((i) => i.runId === run.id && i.prUrl).length,
+            prs: items.filter(
+              (i) => (i.lastRunId ?? i.runId) === run.id && i.prUrl,
+            ).length,
           })),
       });
     });
@@ -774,9 +777,17 @@ export default [
           results: await db
             .repository<Result>('qcResults')
             .findMany({ filter: { runId } }),
-          workItems: await db
-            .repository<WorkItem>('qcWorkItems')
-            .findMany({ filter: { runId } }),
+          // To-dos raised by this run and those an earlier run raised that this run continued.
+          workItems: [
+            ...(await db
+              .repository<WorkItem>('qcWorkItems')
+              .findMany({ filter: { runId } })),
+            ...(
+              await db
+                .repository<WorkItem>('qcWorkItems')
+                .findMany({ filter: { lastRunId: runId } })
+            ).filter((i) => i.runId !== runId),
+          ],
         },
       });
     });
@@ -921,7 +932,8 @@ export default [
           .sort((a, b) => b.id - a.id)
           .map((i) => ({
             ...i,
-            runKey: runs.find((r) => r.id === i.runId)?.key ?? '',
+            runKey:
+              runs.find((r) => r.id === (i.lastRunId ?? i.runId))?.key ?? '',
           })),
       });
     });
@@ -995,20 +1007,52 @@ export default [
         .findOne({ filter: { id: itemId, projectId } });
       if (!item)
         throw new HTTPException(404, { message: 'WORK_ITEM_NOT_FOUND' });
-      const result = item.resultId
+      // The latest result and run the to-do tracks, and every result of its Check × object, newest first.
+      const resultId = item.lastResultId ?? item.resultId;
+      const runId = item.lastRunId ?? item.runId;
+      const result = resultId
         ? await db
             .repository<Result>('qcResults')
-            .findOne({ filter: { id: item.resultId } })
+            .findOne({ filter: { id: resultId } })
         : null;
-      const run = item.runId
-        ? await db
-            .repository<Run>('qcRuns')
-            .findOne({ filter: { id: item.runId } })
+      const run = runId
+        ? await db.repository<Run>('qcRuns').findOne({ filter: { id: runId } })
         : null;
+      const runs = await db
+        .repository<Run>('qcRuns')
+        .findMany({ filter: { projectId } });
+      const history =
+        item.checkId && item.objectId
+          ? (
+              await db.repository<Result>('qcResults').findMany({
+                filter: {
+                  projectId,
+                  checkId: item.checkId,
+                  objectId: item.objectId,
+                },
+              })
+            )
+              .map((r) => {
+                const of = runs.find((x) => x.id === r.runId);
+                return {
+                  id: r.id,
+                  runId: r.runId,
+                  runKey: of?.key ?? '',
+                  startedAt: of?.startedAt ?? '',
+                  conclusion: r.conclusion,
+                  reviewStatus: r.reviewStatus,
+                  note: r.note,
+                  prUrl: r.prUrl,
+                };
+              })
+              .sort((x, y) => y.startedAt.localeCompare(x.startedAt))
+              .slice(0, 30)
+          : [];
       return c.json({
         data: {
           item,
           result,
+          history,
           run: run && {
             id: run.id,
             key: run.key,

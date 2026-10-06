@@ -382,6 +382,8 @@ const enUS = {
     restored: 'Restored.',
     objectArchivedFirst: 'Restore its object first',
     noDimensionChecks: 'No Checks yet',
+    occurrences: 'Failed in {{count}} runs',
+    runHistory: 'Results by run',
     category: {
       installation: 'Installation',
       deployment: 'Deployment',

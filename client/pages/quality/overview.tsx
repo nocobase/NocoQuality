@@ -23,7 +23,7 @@ import type {
   WorkItem,
 } from './types.js';
 import { useRequest } from './use-quality-data.js';
-import { runProgress, skipReason, time } from './model.js';
+import { itemForResult, runProgress, skipReason, time } from './model.js';
 import { SectionTitle } from './ui.js';
 import {
   RunDispatch,
@@ -238,7 +238,7 @@ export function Overview({
             {failed.length ? (
               <ul className='divide-y rounded-xl border'>
                 {failed.map((r) => {
-                  const item = workItems.find((i) => i.resultId === r.id);
+                  const item = itemForResult(workItems, r);
                   const reason = item ? null : skipReason(detail, r);
                   return (
                     <li key={r.id}>

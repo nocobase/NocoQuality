@@ -41,7 +41,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cellScore, runProgress, skipReason } from './model.js';
+import { cellScore, itemForResult, runProgress, skipReason } from './model.js';
 import { RunDispatch, RunProgress, RunStatusBadge } from './run-status.js';
 import type {
   Check,
@@ -53,6 +53,7 @@ import type {
   RunSummary,
   WorkItem,
   WorkItemDetail,
+  WorkItemHistoryEntry,
 } from './types.js';
 import { ReportText, SectionTitle, StatusBadge } from './ui.js';
 import { useSubmission } from './use-submission.js';
@@ -502,7 +503,7 @@ export function CellResultsSheet({
               key={r.id}
               detail={detail}
               result={r}
-              item={data?.workItems.find((i) => i.resultId === r.id)}
+              item={data ? itemForResult(data.workItems, r) : undefined}
               users={users}
               onChanged={onChanged}
             />
@@ -558,7 +559,7 @@ export function RunView({
     (r) =>
       r.conclusion === 'failed' &&
       r.reviewStatus !== 'pending' &&
-      !workItems.some((i) => i.resultId === r.id),
+      !itemForResult(workItems, r),
   ).length;
   const { done, total } = runProgress(run, results);
   const dimensions = detail.dimensions.filter((d) => checkDims.has(d.id));
@@ -852,6 +853,62 @@ function ContextSection({
   );
 }
 
+// How many runs a run to-do has failed in; shown only once a later run has continued it.
+function Occurrences({
+  item,
+  className = '',
+}: {
+  item: WorkItem;
+  className?: string;
+}) {
+  const { t } = useTranslation();
+  if (!item.occurrences || item.occurrences < 2) return null;
+  return (
+    <Badge variant='outline' className={'qc-tone qc-tone-bad ' + className}>
+      {t('qc.occurrences', { count: item.occurrences })}
+    </Badge>
+  );
+}
+
+// Every result of the to-do's Check × object, newest first, so a changed suggestion in a later run is not lost.
+function WorkItemHistory({ history }: { history: WorkItemHistoryEntry[] }) {
+  const { t } = useTranslation();
+  if (history.length < 2) return null;
+  return (
+    <section className='space-y-2'>
+      <h3 className='text-sm font-semibold'>{t('qc.runHistory')}</h3>
+      <ol className='divide-y rounded-lg border'>
+        {history.map((h) => (
+          <li key={h.id} className='space-y-1 px-4 py-3 text-sm'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <span className='font-mono text-xs'>{h.runKey}</span>
+              {h.reviewStatus === 'pending' ? (
+                <Badge variant='outline' className='qc-tone qc-tone-warn'>
+                  {t('qc.reviewPending')}
+                </Badge>
+              ) : (
+                <StatusBadge kind='result' value={h.conclusion} />
+              )}
+              {h.prUrl && (
+                <a
+                  href={h.prUrl}
+                  target='_blank'
+                  rel='noreferrer'
+                  className='inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline'
+                >
+                  <GitPullRequest className='size-3.5' />
+                  {h.prUrl.replace(/^https:\/\/github\.com\//, '')}
+                </a>
+              )}
+            </div>
+            {h.note && <p className='text-muted-foreground'>{h.note}</p>}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 // One to-do with the context needed to take it over, whether it came from a run or was filed by hand.
 function WorkItemSheet({
   detail,
@@ -936,6 +993,7 @@ function WorkItemSheet({
                 >
                   {t('qc.workStatus.' + item.status)}
                 </Badge>
+                <Occurrences item={item} />
               </>
             )}
           </div>
@@ -1004,6 +1062,7 @@ function WorkItemSheet({
               title={t('qc.ctx.handling')}
               text={context?.handling}
             />
+            <WorkItemHistory history={data.history ?? []} />
           </div>
         )}
       </SheetContent>
@@ -1186,6 +1245,7 @@ export function WorkItemsView({
                     )}
                     <TableCell className='max-w-md whitespace-normal first:pl-5'>
                       <span className='font-medium'>{item.title}</span>
+                      <Occurrences item={item} className='ml-2' />
                       {item.prUrl && (
                         <span className='mt-1 block'>
                           <PrLink item={item} />

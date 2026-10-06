@@ -166,6 +166,11 @@ export interface WorkItem {
   runId: number | null;
   runKey?: string;
   resultId: number | null;
+  // Where a to-do continued by later runs was last seen; runId/resultId stay where it was first raised.
+  lastRunId?: number | null;
+  lastResultId?: number | null;
+  occurrences?: number;
+  lastSeenAt?: string | null;
   checkId: number | null;
   objectId: number | null;
   problem: string | null;
@@ -195,8 +200,20 @@ export interface QualityUser {
   id: string;
   name: string;
 }
+export interface WorkItemHistoryEntry {
+  id: number;
+  runId: number;
+  runKey: string;
+  startedAt: string;
+  conclusion: 'passed' | 'failed';
+  reviewStatus?: 'pending' | 'confirmed' | null;
+  note: string | null;
+  prUrl: string | null;
+}
 export interface WorkItemDetail {
   item: WorkItem;
   result: Result | null;
+  // Every result of the to-do's Check × object, newest first.
+  history?: WorkItemHistoryEntry[];
   run: Pick<Run, 'id' | 'key' | 'environment' | 'startedAt'> | null;
 }

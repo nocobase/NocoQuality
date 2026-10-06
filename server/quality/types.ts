@@ -172,4 +172,9 @@ export interface WorkItem {
   createdAt: string;
   doneAt: string | null;
   doneBy: string | null;
+  // runId/resultId are where the to-do was first raised; a later failing run of the same Check × object updates these.
+  lastRunId: number | null;
+  lastResultId: number | null;
+  occurrences: number;
+  lastSeenAt: string | null;
 }
