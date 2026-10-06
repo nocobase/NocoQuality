@@ -1,6 +1,6 @@
 import { useTranslation } from '@nocobase/i18n/client';
 import { useState } from 'react';
-import { History, UserRoundCheck } from 'lucide-react';
+import { History, UserRound, UserRoundCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,7 +18,7 @@ import type {
   QualityUser,
 } from './types.js';
 import type { manualChecksFor } from './model.js';
-import { time } from './model.js';
+import { ownerOf, time, userName } from './model.js';
 import { SectionTitle, StatusBadge } from './ui.js';
 import { useSubmission } from './use-submission.js';
 import { useRequest } from './use-quality-data.js';
@@ -260,6 +260,16 @@ export function ManualChecks({
         title={t('qc.manual.title') + ' · ' + entries.length}
         description={t('qc.manual.hint')}
       />
+      <p className='flex items-center gap-1.5 text-sm text-muted-foreground'>
+        <UserRound className='size-4' />
+        {t('qc.manual.ownedBy', {
+          name: userName(
+            users,
+            ownerOf(detail, entries[0]?.objectId),
+            t('qc.noOwner'),
+          ),
+        })}
+      </p>
       <ul className='divide-y rounded-xl border'>
         {entries.map((entry) => (
           <ManualRow

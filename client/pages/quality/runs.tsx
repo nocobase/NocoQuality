@@ -45,8 +45,10 @@ import {
   cellTone,
   isManual,
   itemForResult,
+  ownerOf,
   runProgress,
   skipReason,
+  userName,
   type CellScore,
 } from './model.js';
 import { ManualChecks } from './manual.js';
@@ -56,6 +58,7 @@ import type {
   Detail,
   FixMode,
   QualityUser,
+  WorkItemAssignment,
   Result,
   RunDetail,
   RunSummary,
@@ -68,6 +71,9 @@ import { useSubmission } from './use-submission.js';
 import { useRequest, useUsers } from './use-quality-data.js';
 
 type Go = (view: string, extra?: Record<string, string>) => void;
+type Scope = 'mine' | 'all' | 'unassigned';
+// The to-do list's key for to-dos nobody handles yet; user ids are never empty.
+const UNASSIGNED = '-';
 
 export function ScoreChip({
   score,
@@ -247,7 +253,7 @@ function WorkItemState({
       </Badge>
       <span className='flex items-center gap-1 text-muted-foreground'>
         <UserRound className='size-3' />
-        {users.find((u) => u.id === item.assigneeId)?.name ?? item.assigneeId}
+        {userName(users, item.assigneeId, t('qc.unassigned'))}
       </span>
     </span>
   );
@@ -812,6 +818,36 @@ function WorkItemHistory({ history }: { history: WorkItemHistoryEntry[] }) {
   );
 }
 
+// Who handed the to-do to whom and when, newest first.
+function AssignmentHistory({
+  assignments,
+  users,
+}: {
+  assignments: WorkItemAssignment[];
+  users: QualityUser[];
+}) {
+  const { t } = useTranslation();
+  if (!assignments.length) return null;
+  const name = (id: string | null) => userName(users, id, t('qc.unassigned'));
+  return (
+    <section className='space-y-2'>
+      <h3 className='text-sm font-semibold'>{t('qc.assignmentHistory')}</h3>
+      <ol className='divide-y rounded-lg border'>
+        {assignments.map((a) => (
+          <li key={a.id} className='px-4 py-2 text-sm text-muted-foreground'>
+            {t('qc.assignmentEntry', {
+              by: name(a.changedBy),
+              from: name(a.fromAssigneeId),
+              to: name(a.toAssigneeId),
+              at: time(a.changedAt),
+            })}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 // One to-do with the context needed to take it over, whether it came from a run or was filed by hand.
 function WorkItemSheet({
   detail,
@@ -820,6 +856,7 @@ function WorkItemSheet({
   revision,
   onClose,
   onDone,
+  onAssigned,
 }: {
   detail: Detail;
   itemId: number | null;
@@ -827,6 +864,7 @@ function WorkItemSheet({
   revision: number;
   onClose: () => void;
   onDone: () => void;
+  onAssigned: () => void;
 }) {
   const { t } = useTranslation();
   const { submit, busy, error } = useSubmission();
@@ -845,6 +883,14 @@ function WorkItemSheet({
     (s) => s.id === data?.result?.standardId,
   );
   const env = data?.run?.environment;
+  // Anyone can take the to-do over, or hand it back to nobody; an assignee no longer listed stays shown.
+  const people = [
+    { value: '', label: t('qc.unassigned') },
+    ...(item?.assigneeId && !users.some((u) => u.id === item.assigneeId)
+      ? [{ value: item.assigneeId, label: item.assigneeId }]
+      : []),
+    ...users.map((u) => ({ value: u.id, label: u.name })),
+  ];
   // Run to-dos derive their context from the Check standard, the run environment and the result evidence.
   const context =
     item?.source === 'run'
@@ -904,15 +950,50 @@ function WorkItemSheet({
           <SheetDescription>
             {item &&
               t('qc.workMeta', {
-                assignee:
-                  users.find((u) => u.id === item.assigneeId)?.name ??
-                  item.assigneeId,
+                assignee: userName(users, item.assigneeId, t('qc.unassigned')),
                 at: time(item.createdAt),
               })}
           </SheetDescription>
           {item && (
             <div className='mt-3 flex flex-wrap items-center gap-3'>
               <PrLink item={item} />
+              {item.status === 'open' && (
+                <div className='w-48'>
+                  <Select
+                    value={item.assigneeId ?? ''}
+                    items={people}
+                    disabled={busy}
+                    onValueChange={(v) => {
+                      if (v === null || v === (item.assigneeId ?? '')) return;
+                      void submit(
+                        'quality/projects/' +
+                          detail.project.id +
+                          '/work-items/' +
+                          item.id +
+                          '/assignee',
+                        { assigneeId: v || null },
+                        onAssigned,
+                      );
+                    }}
+                  >
+                    <SelectTrigger
+                      size='sm'
+                      className='w-full bg-card'
+                      aria-label={t('qc.changeAssignee')}
+                    >
+                      <UserRound />
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {people.map((p) => (
+                        <SelectItem key={p.value || 'none'} value={p.value}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               {item.status === 'open' && (
                 <Button
                   size='sm'
@@ -966,6 +1047,10 @@ function WorkItemSheet({
               text={context?.handling}
             />
             <WorkItemHistory history={data.history ?? []} />
+            <AssignmentHistory
+              assignments={data.assignments ?? []}
+              users={users}
+            />
           </div>
         )}
       </SheetContent>
@@ -973,7 +1058,7 @@ function WorkItemSheet({
   );
 }
 
-// Everyone's to-dos (the task list) or only mine; both open each to-do in place with its full context.
+// My to-dos, everyone's (the task list) or those nobody handles yet; each opens in place with its full context.
 export function WorkItemsView({
   detail,
   go,
@@ -985,12 +1070,13 @@ export function WorkItemsView({
   go: Go;
   revision: number;
   onChanged: () => void;
-  defaultScope: 'mine' | 'all';
+  defaultScope: Scope;
 }) {
   const { t } = useTranslation();
   const users = useUsers();
-  const [scope, setScope] = useState<'mine' | 'all'>(defaultScope);
+  const [scope, setScope] = useState<Scope>(defaultScope);
   const [status, setStatus] = useState<'open' | 'done'>('open');
+  // A person's id, the unassigned key, or empty for everyone.
   const [assignee, setAssignee] = useState('');
   const [picked, setPicked] = useState<number[]>([]);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -1000,16 +1086,18 @@ export function WorkItemsView({
     revision,
   );
   const all = Array.isArray(state.data) ? state.data : [];
+  const keyOf = (i: WorkItem) => i.assigneeId ?? UNASSIGNED;
   const rows = all.filter(
-    (i) => i.status === status && (!assignee || i.assigneeId === assignee),
+    (i) => i.status === status && (!assignee || keyOf(i) === assignee),
   );
   const allPicked = rows.length > 0 && rows.every((r) => picked.includes(r.id));
-  const nameOf = (id: string) => users.find((u) => u.id === id)?.name ?? id;
+  const nameOf = (id: string | null) =>
+    userName(users, id === UNASSIGNED ? null : id, t('qc.unassigned'));
   const perAssignee = Array.from(
     all
       .filter((i) => i.status === 'open')
       .reduce(
-        (m, i) => m.set(i.assigneeId, (m.get(i.assigneeId) ?? 0) + 1),
+        (m, i) => m.set(keyOf(i), (m.get(keyOf(i)) ?? 0) + 1),
         new Map<string, number>(),
       ),
   );
@@ -1043,7 +1131,7 @@ export function WorkItemsView({
         <Tabs
           value={scope}
           onValueChange={(v) => {
-            setScope(v as 'mine' | 'all');
+            setScope(v as Scope);
             setPicked([]);
             setAssignee('');
           }}
@@ -1051,6 +1139,9 @@ export function WorkItemsView({
           <TabsList>
             <TabsTrigger value='mine'>{t('qc.todoMine')}</TabsTrigger>
             <TabsTrigger value='all'>{t('qc.todoAll')}</TabsTrigger>
+            <TabsTrigger value='unassigned'>
+              {t('qc.todoUnassigned')}
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Tabs
@@ -1167,7 +1258,12 @@ export function WorkItemsView({
                         {t('qc.workKind.' + item.kind)}
                       </Badge>
                     </TableCell>
-                    <TableCell className='text-sm'>
+                    <TableCell
+                      className={
+                        'text-sm ' +
+                        (item.assigneeId ? '' : 'text-muted-foreground')
+                      }
+                    >
                       {nameOf(item.assigneeId)}
                     </TableCell>
                     <TableCell className='text-sm text-muted-foreground'>
@@ -1195,12 +1291,14 @@ export function WorkItemsView({
           setOpenId(null);
           done();
         }}
+        onAssigned={done}
       />
     </div>
   );
 }
 
-// How a not-passed result of this Check is handled, and who reviews or handles it.
+// How a not-passed result of this Check is handled. Who handles it is not a setting of the Check: the owner of the
+// module it fails on reviews the PR or handles the result, and keeps a human-judged Check's state.
 export function CheckSettings({
   detail,
   check,
@@ -1213,20 +1311,17 @@ export function CheckSettings({
   const { t } = useTranslation();
   const users = useUsers();
   const { submit, busy, error } = useSubmission();
-  // A human-judged Check is not run, so it has no failures to handle; it keeps only its owner.
+  // A human-judged Check is not run, so it has no failures to handle; it shows only who keeps its state.
   const manual = isManual(detail, check.id);
   const [fixMode, setFixMode] = useState<FixMode>(check.fixMode);
-  const [assignee, setAssignee] = useState(check.assigneeId ?? '');
-  const changed =
-    fixMode !== check.fixMode || assignee !== (check.assigneeId ?? '');
   const modes = (['pr', 'assign'] as const).map((v) => ({
     value: v,
     label: t('qc.fixMode.' + v),
   }));
-  const people = [
-    { value: '', label: t('qc.assigneeDefault') },
-    ...users.map((u) => ({ value: u.id, label: u.name })),
-  ];
+  const owner =
+    check.scope === 'shared'
+      ? null
+      : userName(users, ownerOf(detail, check.objectId), t('qc.noOwner'));
   return (
     <Card className='qc-card'>
       <CardContent className='space-y-4 p-5'>
@@ -1261,54 +1356,43 @@ export function CheckSettings({
             </Select>
           </div>
         )}
-        <div className='space-y-2'>
-          <Label>
-            {t(
-              manual
-                ? 'qc.manual.owner'
-                : fixMode === 'pr'
-                  ? 'qc.reviewer'
-                  : 'qc.handler',
-            )}
-          </Label>
-          <Select
-            value={assignee}
-            items={people}
-            onValueChange={(v) => setAssignee(v ?? '')}
-          >
-            <SelectTrigger
-              className='w-full bg-card'
-              aria-label={t('qc.assignee')}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {people.map((p) => (
-                <SelectItem key={p.value || 'default'} value={p.value}>
-                  {p.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className='space-y-1 rounded-lg bg-muted/60 px-3 py-2 text-sm'>
+          {owner !== null ? (
+            <p className='flex items-center gap-1.5'>
+              <UserRound className='size-4 text-muted-foreground' />
+              {t(manual ? 'qc.manual.ownedBy' : 'qc.ownerIs', { name: owner })}
+            </p>
+          ) : (
+            <p>{t('qc.manual.ownedByModules')}</p>
+          )}
+          {!manual && (
+            <p className='text-xs leading-5 text-muted-foreground'>
+              {t('qc.fixOwnerHint')}
+            </p>
+          )}
         </div>
-        {error && <p className='text-sm text-destructive'>{error}</p>}
-        <Button
-          className='w-full'
-          disabled={!changed || busy}
-          onClick={() =>
-            void submit(
-              'quality/projects/' +
-                detail.project.id +
-                '/checks/' +
-                check.id +
-                '/settings',
-              { fixMode, assigneeId: assignee || null },
-              onChanged,
-            )
-          }
-        >
-          {t(busy ? 'qc.saving' : 'qc.save')}
-        </Button>
+        {!manual && (
+          <>
+            {error && <p className='text-sm text-destructive'>{error}</p>}
+            <Button
+              className='w-full'
+              disabled={fixMode === check.fixMode || busy}
+              onClick={() =>
+                void submit(
+                  'quality/projects/' +
+                    detail.project.id +
+                    '/checks/' +
+                    check.id +
+                    '/settings',
+                  { fixMode },
+                  onChanged,
+                )
+              }
+            >
+              {t(busy ? 'qc.saving' : 'qc.save')}
+            </Button>
+          </>
+        )}
       </CardContent>
     </Card>
   );

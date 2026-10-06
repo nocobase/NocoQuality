@@ -51,6 +51,7 @@ const detail: Detail = {
       testingPaused: false,
       pausedReason: null,
       materials: null,
+      ownerId: 'u1',
     },
     {
       id: 13,
@@ -72,7 +73,6 @@ const detail: Detail = {
       objectId: 12,
       scope: 'object',
       fixMode: 'assign',
-      assigneeId: null,
       dimensionId: 11,
       key: 'payment',
       name: '充值消费',
@@ -221,7 +221,6 @@ describe('quality workspace', () => {
       objectId: null,
       scope: 'shared',
       fixMode: 'pr',
-      assigneeId: null,
       dimensionId: 11,
       key: 'skills',
       name: '提供 Skills',
@@ -478,9 +477,10 @@ describe('quality workspace', () => {
         expect.objectContaining({
           path: 'quality/projects/10/work-items',
           method: 'POST',
+          // Nobody is chosen and no module is related, so it stays unassigned.
           json: expect.objectContaining({
             title: '新问题',
-            assigneeId: 'u1',
+            assigneeId: null,
             problem: 'problem 内容',
             prUrl: null,
           }),
@@ -861,5 +861,199 @@ describe('quality workspace', () => {
     expect(await screen.findByText('qc.runHistory')).toBeVisible();
     expect(screen.getByText('换一种改法：补充示例')).toBeVisible();
     expect(screen.getByText('2026-10-05-01')).toBeVisible();
+  });
+  it("shows each module's owner in the matrix and changes it from the object form", async () => {
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? {}
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users'
+                ? [
+                    { id: 'u1', name: '饭卡负责人' },
+                    { id: 'u2', name: '考勤负责人' },
+                  ]
+                : path.endsWith('/runs')
+                  ? []
+                  : structuredClone(detail),
+      }),
+    );
+    const user = userEvent.setup();
+    show('coverage');
+    expect(await screen.findByText('饭卡负责人')).toBeVisible();
+    expect(screen.getByText('qc.noOwner')).toBeVisible();
+    cleanup();
+    show('edit-object&record=13');
+    await user.click(await screen.findByRole('combobox', { name: 'qc.owner' }));
+    await user.click(await screen.findByRole('option', { name: '考勤负责人' }));
+    await user.click(
+      screen.getByRole('button', { name: 'qc.save', exact: true }),
+    );
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/objects/13/update',
+          json: expect.objectContaining({ name: '考勤', ownerId: 'u2' }),
+        }),
+      ),
+    );
+  });
+  it("shows a Check's module owner instead of an assignee and saves only the handling", async () => {
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? {}
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users'
+                ? [{ id: 'u1', name: '饭卡负责人' }]
+                : path.endsWith('/runs')
+                  ? []
+                  : structuredClone(detail),
+      }),
+    );
+    const user = userEvent.setup();
+    show('standard&record=14');
+    expect(await screen.findByText('qc.ownerIs')).toBeVisible();
+    expect(
+      screen.queryByRole('combobox', { name: 'qc.assignee' }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('combobox', { name: 'qc.fixModeLabel' }));
+    await user.click(
+      await screen.findByRole('option', { name: 'qc.fixMode.pr' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'qc.save' }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/checks/14/settings',
+          json: { fixMode: 'pr' },
+        }),
+      ),
+    );
+  });
+  it('lists unassigned to-dos, hands one to someone and shows who changed it', async () => {
+    const item = {
+      id: 90,
+      source: 'run',
+      runId: 91,
+      resultId: 92,
+      checkId: 14,
+      objectId: 12,
+      kind: 'manual',
+      title: '充值消费 · 饭卡',
+      assigneeId: null,
+      prUrl: null,
+      prState: null,
+      status: 'open',
+      createdAt: '2026-10-06T10:00:00Z',
+      runKey: '2026-10-06-01',
+    };
+    const assignments = [
+      {
+        id: 1,
+        fromAssigneeId: 'u1',
+        toAssigneeId: null,
+        changedBy: 'u2',
+        changedAt: '2026-10-06T11:00:00Z',
+      },
+    ];
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? { ...item, assigneeId: 'u1' }
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users'
+                ? [
+                    { id: 'u1', name: '饭卡负责人' },
+                    { id: 'u2', name: '组长' },
+                  ]
+                : path.endsWith('/work-items/90')
+                  ? { item, result: null, run: null, assignments }
+                  : path.includes('/work-items')
+                    ? [item]
+                    : path.endsWith('/runs')
+                      ? []
+                      : structuredClone(detail),
+      }),
+    );
+    const user = userEvent.setup();
+    show('todo&scope=unassigned');
+    expect(
+      await screen.findByRole('tab', { name: 'qc.todoUnassigned' }),
+    ).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/work-items?scope=unassigned',
+        }),
+      ),
+    );
+    await user.click(await screen.findByText('充值消费 · 饭卡'));
+    expect(await screen.findByText('qc.assignmentHistory')).toBeVisible();
+    expect(screen.getByText('qc.assignmentEntry')).toBeVisible();
+    await user.click(
+      screen.getByRole('combobox', { name: 'qc.changeAssignee' }),
+    );
+    await user.click(await screen.findByRole('option', { name: '饭卡负责人' }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/work-items/90/assignee',
+          method: 'POST',
+          json: { assigneeId: 'u1' },
+        }),
+      ),
+    );
+  });
+  it("hands a to-do filed by hand to the related module's owner unless someone is chosen", async () => {
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? { id: 41 }
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users'
+                ? [{ id: 'u1', name: '饭卡负责人' }]
+                : path.endsWith('/runs')
+                  ? []
+                  : structuredClone(detail),
+      }),
+    );
+    const user = userEvent.setup();
+    show('new-work-item');
+    await user.type(
+      await screen.findByRole('textbox', { name: 'qc.workTitle' }),
+      '饭卡问题',
+    );
+    for (const key of ['problem', 'scenario', 'evidence', 'handling'])
+      await user.type(
+        screen.getByRole('textbox', { name: 'qc.ctx.' + key }),
+        key,
+      );
+    await user.click(
+      screen.getByRole('combobox', { name: 'qc.relatedObject' }),
+    );
+    await user.click(await screen.findByRole('option', { name: '饭卡' }));
+    expect(
+      screen.getByRole('combobox', { name: 'qc.assignee' }),
+    ).toHaveTextContent('饭卡负责人');
+    await user.click(
+      screen.getByRole('button', { name: 'qc.save', exact: true }),
+    );
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/work-items',
+          json: expect.objectContaining({ objectId: 12, assigneeId: 'u1' }),
+        }),
+      ),
+    );
   });
 });

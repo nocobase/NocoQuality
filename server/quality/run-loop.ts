@@ -171,7 +171,8 @@ async function findRun(conn: Conn, projectId: number, runId: number) {
 // Keeps one to-do per Check × object in step with its results: a PR review or manual to-do while it fails, and done
 // (by the system) once the result it tracks passes or is skipped. A later run that fails a pair with an open to-do updates that to-do (lastRunId, lastResultId, occurrences)
 // instead of adding another, and keeps its PR when the new result brings none. A to-do someone marked done stays done;
-// the next failure of that pair opens a new one.
+// the next failure of that pair opens a new one. A new to-do goes to the module's owner, or stays unassigned without
+// one; a continued to-do keeps whoever handles it now, so a hand-made reassignment survives later runs.
 async function syncWorkItem(
   conn: Conn,
   run: Run,
@@ -221,7 +222,6 @@ async function syncWorkItem(
     const values = {
       kind,
       title: check!.name + ' · ' + object!.name,
-      assigneeId: check!.assigneeId || run.triggeredBy || actor,
       prUrl,
       ...(result.prUrl ? { prState: 'open' as const } : {}),
       lastRunId: run.id,
@@ -244,6 +244,7 @@ async function syncWorkItem(
       await repo.createOne({
         values: {
           ...values,
+          assigneeId: object!.ownerId ?? null,
           prState: prUrl ? 'open' : null,
           projectId: run.projectId,
           source: 'run',
@@ -357,16 +358,17 @@ export async function finishRun(
     return { run: updated, notify: true };
   });
   if (outcome.notify) {
-    // One in-app message per assignee and run, after the data is committed.
+    // One in-app message per assignee and run, after the data is committed; unassigned to-dos notify nobody.
     const open = await db
       .repository<WorkItem>('qcWorkItems')
       .findMany({ filter: { runId, status: 'open' } });
     const byAssignee = new Map<string, number>();
     for (const item of open)
-      byAssignee.set(
-        item.assigneeId,
-        (byAssignee.get(item.assigneeId) ?? 0) + 1,
-      );
+      if (item.assigneeId)
+        byAssignee.set(
+          item.assigneeId,
+          (byAssignee.get(item.assigneeId) ?? 0) + 1,
+        );
     for (const [assignee, count] of byAssignee)
       await notification.send({
         idempotencyKey: 'qc-run-' + runId + '-' + assignee,

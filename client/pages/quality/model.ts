@@ -3,6 +3,7 @@ import type {
   Detail,
   ManualState,
   ManualStatus,
+  QualityUser,
   Result,
   Run,
   WorkItem,
@@ -225,6 +226,22 @@ export function runProgress(run: Run, results: readonly Result[]) {
 
 export function time(value?: string | null) {
   return value ? new Date(value).toLocaleString() : '—';
+}
+
+// A person's display name, or the fallback (unassigned, no owner) when there is nobody. An id that is no longer
+// listed, such as a removed account, shows as itself.
+export function userName(
+  users: readonly QualityUser[],
+  id: string | null | undefined,
+  fallback: string,
+) {
+  if (!id) return fallback;
+  return users.find((u) => u.id === id)?.name ?? id;
+}
+
+// The owner of the module a Check runs on; a shared Check has one per module, so it has none of its own.
+export function ownerOf(detail: Detail, objectId: number | null | undefined) {
+  return detail.objects.find((o) => o.id === objectId)?.ownerId ?? null;
 }
 
 // The latest run's conclusion for a Check (on one object, or across all its objects).

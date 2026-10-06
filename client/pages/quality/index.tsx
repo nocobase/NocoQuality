@@ -332,7 +332,11 @@ export default function QualityPage() {
           revision={revision}
           onChanged={refresh}
           defaultScope={
-            view === 'tasks' || params.get('scope') === 'all' ? 'all' : 'mine'
+            params.get('scope') === 'unassigned'
+              ? 'unassigned'
+              : view === 'tasks' || params.get('scope') === 'all'
+                ? 'all'
+                : 'mine'
           }
         />
       )}
@@ -716,7 +720,7 @@ export default function QualityPage() {
                 </CardContent>
               </Card>
               <CheckSettings
-                key={check.id + check.fixMode + (check.assigneeId ?? '')}
+                key={check.id + check.fixMode}
                 detail={detail}
                 check={check}
                 onChanged={refresh}

@@ -27,6 +27,8 @@ export interface TestObject {
   pausedReason: string | null;
   // Skills, packages and documentation pages that belong to the object.
   materials: Material[] | null;
+  // The module's owner handles every Check on it; empty while nobody owns it.
+  ownerId?: string | null;
 }
 export type MaterialType = 'skill' | 'package' | 'doc' | 'other';
 export interface Material {
@@ -45,7 +47,6 @@ export interface Check {
   name: string;
   active: boolean;
   fixMode: FixMode;
-  assigneeId: string | null;
   // The problem, PR or report this Check guards against.
   source: string | null;
 }
@@ -197,7 +198,8 @@ export interface WorkItem {
   createdBy: string | null;
   kind: 'pr_review' | 'manual' | 'review';
   title: string;
-  assigneeId: string;
+  // Empty while unassigned.
+  assigneeId: string | null;
   prUrl: string | null;
   status: 'open' | 'done';
   createdAt: string;
@@ -222,10 +224,20 @@ export interface WorkItemHistoryEntry {
   note: string | null;
   prUrl: string | null;
 }
+// One change of a to-do's handler.
+export interface WorkItemAssignment {
+  id: number;
+  fromAssigneeId: string | null;
+  toAssigneeId: string | null;
+  changedBy: string;
+  changedAt: string;
+}
 export interface WorkItemDetail {
   item: WorkItem;
   result: Result | null;
   // Every result of the to-do's Check × object, newest first.
   history?: WorkItemHistoryEntry[];
+  // Every change of the handler, newest first.
+  assignments?: WorkItemAssignment[];
   run: Pick<Run, 'id' | 'key' | 'environment' | 'startedAt'> | null;
 }

@@ -238,6 +238,17 @@ function seed(): Record<string, Row[]> {
         createdAt: '2026-10-06T00:00:00.000Z',
       },
     ],
+    qcWorkItemAssignments: [
+      {
+        id: 1,
+        projectId: 1,
+        workItemId: 1,
+        fromAssigneeId: null,
+        toAssigneeId: 'u2',
+        changedBy: 'u1',
+        changedAt: '2026-10-06T00:00:00.000Z',
+      },
+    ],
   };
 }
 

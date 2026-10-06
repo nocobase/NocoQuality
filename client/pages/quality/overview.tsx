@@ -8,6 +8,7 @@ import {
   History,
   ListChecks,
   UserRoundCheck,
+  UserRoundX,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
@@ -133,6 +134,10 @@ export function Overview({
     (i) => i.status === 'open' && i.kind === 'pr_review',
   );
   const myOpen = (mine ?? []).filter((i) => i.status === 'open');
+  // To-dos whose module has no owner wait for someone to take them; the tile shows only while there are some.
+  const unassigned = (items ?? []).filter(
+    (i) => i.status === 'open' && !i.assigneeId,
+  );
   const { done, total } = runProgress(run, latest.results);
   const notRun = total - done;
   const name = (r: Result) =>
@@ -176,6 +181,17 @@ export function Overview({
       Icon: ListChecks,
       onClick: () => go('todo'),
     },
+    ...(unassigned.length
+      ? [
+          {
+            key: 'unassigned',
+            value: unassigned.length,
+            tone: 'warn',
+            Icon: UserRoundX,
+            onClick: () => go('todo', { scope: 'unassigned' }),
+          } as const,
+        ]
+      : []),
   ] as const;
   const diff = previous
     ? compareRuns(
@@ -212,7 +228,14 @@ export function Overview({
           </div>
         </CardContent>
       </Card>
-      <div className='grid grid-cols-2 gap-4 xl:grid-cols-4'>
+      <div
+        className={
+          'grid grid-cols-2 gap-4 ' +
+          (tiles.length > 4
+            ? 'lg:grid-cols-3 xl:grid-cols-5'
+            : 'xl:grid-cols-4')
+        }
+      >
         {tiles.map(({ key, value, tone, Icon, onClick }) => (
           <button
             type='button'
