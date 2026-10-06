@@ -71,12 +71,24 @@ function createFakeAuth(): Auth {
   return { required, optional: required } as unknown as Auth;
 }
 
-/** Only the user named root holds the unrestricted permission snapshot. */
+/** Only the user named root holds the unrestricted permission snapshot; `quality-member` holds the quality page grant. */
 function createFakeAuthorization() {
   return {
     middleware: () => async (context: Context, next: () => Promise<void>) => {
-      const unrestricted = context.req.header('x-test-user') === 'root';
-      context.set('authz', { snapshot: async () => ({ unrestricted }) });
+      const user = context.req.header('x-test-user');
+      const unrestricted = user === 'root';
+      // `quality-member` holds the quality page grant and nothing else.
+      context.set('authz', {
+        snapshot: async () => ({ unrestricted }),
+        can: async (request: {
+          resource: { type: string; id: string };
+          action: string;
+        }) =>
+          user === 'quality-member' &&
+          request.resource.type === 'page' &&
+          request.resource.id === 'quality' &&
+          request.action === 'access',
+      });
       await next();
     },
   };
@@ -256,6 +268,16 @@ describe('GET /quality/export', () => {
     const member = await request('/export', 'member');
     expect(member.status).toBe(403);
     await expect(member.json()).resolves.toEqual({
+      error: { code: 'FORBIDDEN' },
+    });
+  });
+
+  it('keeps the backup from members who may use the quality workspace', async () => {
+    const { request } = await setup();
+
+    const qualityMember = await request('/export', 'quality-member');
+    expect(qualityMember.status).toBe(403);
+    await expect(qualityMember.json()).resolves.toEqual({
       error: { code: 'FORBIDDEN' },
     });
   });

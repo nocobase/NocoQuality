@@ -31,6 +31,8 @@ auth:
   emailAndPassword:
     enabled: true
     autoSignIn: false
+    # Accounts are created in Users; set to false only to let visitors register themselves.
+    disableSignUp: true
   session:
     storeSessionInDatabase: true
 

@@ -88,8 +88,20 @@ function createFakeAuth(): Auth {
 function createFakeAuthorization() {
   return {
     middleware: () => async (context: Context, next: () => Promise<void>) => {
-      const unrestricted = context.req.header('x-test-user') === 'root';
-      context.set('authz', { snapshot: async () => ({ unrestricted }) });
+      const user = context.req.header('x-test-user');
+      const unrestricted = user === 'root';
+      // `quality-member` holds the quality page grant and nothing else.
+      context.set('authz', {
+        snapshot: async () => ({ unrestricted }),
+        can: async (request: {
+          resource: { type: string; id: string };
+          action: string;
+        }) =>
+          user === 'quality-member' &&
+          request.resource.type === 'page' &&
+          request.resource.id === 'quality' &&
+          request.action === 'access',
+      });
       await next();
     },
   };
@@ -233,6 +245,17 @@ describe('starting and filling a run', () => {
         )
       ).status,
     ).toBe(403);
+  });
+
+  it('lets a member granted the quality page use the workspace', async () => {
+    const { request } = await setup();
+    const response = await request(
+      'POST',
+      '/projects/1/runs',
+      {},
+      'quality-member',
+    );
+    expect(response.status).toBe(201);
   });
 
   it('plans every enabled automated Check on included objects with its latest standard', async () => {
