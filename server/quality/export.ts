@@ -14,6 +14,7 @@ export const exportCollections = [
   'qcRuns',
   'qcResults',
   'qcWorkItems',
+  'qcManualStates',
 ] as const;
 
 export interface ExportedUser {

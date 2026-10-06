@@ -8,6 +8,7 @@ import type {
   Check,
   CheckScope,
   Detail,
+  FixMode,
   JudgeMode,
   Project,
   Standard,
@@ -17,6 +18,50 @@ import { Choice, Field, FormFrame } from './form.js';
 import { useSubmission } from './use-submission.js';
 import { useUsers } from './use-quality-data.js';
 // Create and edit forms for projects, objects, dimensions, to-dos and Check standards.
+
+// One choice among a few options, each shown as a card with a short explanation.
+function RadioCards<T extends string>({
+  legend,
+  value,
+  onChange,
+  items,
+}: {
+  legend: string;
+  value: T;
+  onChange: (v: T) => void;
+  items: { value: T; label: string; hint: string }[];
+}) {
+  return (
+    <fieldset className='space-y-3'>
+      <legend className='mb-3 font-medium'>{legend}</legend>
+      <RadioGroup
+        value={value}
+        onValueChange={(v) => onChange(v as T)}
+        className='grid gap-3 sm:grid-cols-2'
+      >
+        {items.map((item) => (
+          <label
+            key={item.value}
+            className={
+              'flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ' +
+              (value === item.value
+                ? 'border-primary/50 bg-primary/5'
+                : 'hover:bg-muted/50')
+            }
+          >
+            <RadioGroupItem value={item.value} className='mt-0.5' />
+            <span>
+              <span className='block font-medium'>{item.label}</span>
+              <span className='mt-1 block text-xs leading-5 text-muted-foreground'>
+                {item.hint}
+              </span>
+            </span>
+          </label>
+        ))}
+      </RadioGroup>
+    </fieldset>
+  );
+}
 
 export function ProjectForm({
   onCancel,
@@ -297,10 +342,12 @@ export function StandardForm({
         '',
     ),
   );
-  const [humanReview, setHumanReview] = useState(standard?.humanReview ?? true);
-  const [judgeMode, setJudgeMode] = useState<JudgeMode>(
-    standard?.judgeMode ?? 'agent',
+  // A human Check is not run; an automated one says who judges it and how a failure is handled.
+  const [human, setHuman] = useState(standard?.judgeMode === 'human');
+  const [judgeMode, setJudgeMode] = useState<Exclude<JudgeMode, 'human'>>(
+    standard && standard.judgeMode !== 'human' ? standard.judgeMode : 'agent',
   );
+  const [fixMode, setFixMode] = useState<FixMode>(check?.fixMode ?? 'assign');
   const [judgeError, setJudgeError] = useState('');
   // Arriving from one matrix cell means an object-specific Check; otherwise start with the shared default.
   const [scope, setScope] = useState<CheckScope>(
@@ -328,7 +375,7 @@ export function StandardForm({
         const values = Object.fromEntries(new FormData(e.currentTarget));
         const command =
           typeof values.command === 'string' ? values.command.trim() : '';
-        if (judgeMode === 'script' && !command) {
+        if (!human && judgeMode === 'script' && !command) {
           setJudgeError(t('qc.commandRequired'));
           return;
         }
@@ -339,9 +386,9 @@ export function StandardForm({
           steps: values.steps,
           passCriteria: values.passCriteria,
           evidence: values.evidence,
-          humanReview,
-          judgeMode,
-          command: command || null,
+          judgeMode: human ? 'human' : judgeMode,
+          command: (!human && judgeMode === 'script' && command) || null,
+          ...(human ? {} : { fixMode }),
         };
         if (check && standard)
           void submit(
@@ -382,38 +429,65 @@ export function StandardForm({
           );
       }}
     >
+      <RadioCards
+        legend={t('qc.checkKind')}
+        value={human ? 'human' : 'automated'}
+        onChange={(v) => setHuman(v === 'human')}
+        items={(['automated', 'human'] as const).map((v) => ({
+          value: v,
+          label: t('qc.checkKindName.' + v),
+          hint: t('qc.checkKindHint.' + v),
+        }))}
+      />
+      {!human && (
+        <>
+          <RadioCards
+            legend={t('qc.judgeLabel')}
+            value={judgeMode}
+            onChange={setJudgeMode}
+            items={(['script', 'session', 'agent'] as const).map((v) => ({
+              value: v,
+              label: t('qc.judgeMode.' + v),
+              hint: t('qc.judgeHint.' + v),
+            }))}
+          />
+          {judgeMode === 'script' && (
+            <div className='space-y-2'>
+              <Field
+                name='command'
+                label={t('qc.command')}
+                defaultValue={standard?.command ?? ''}
+                maxLength={2000}
+              />
+              <p className='text-xs text-muted-foreground'>
+                {t('qc.commandHint')}
+              </p>
+            </div>
+          )}
+          <RadioCards
+            legend={t('qc.fixModeLabel')}
+            value={fixMode}
+            onChange={setFixMode}
+            items={(['pr', 'assign'] as const).map((v) => ({
+              value: v,
+              label: t('qc.fixMode.' + v),
+              hint: t('qc.fixModeHint.' + v),
+            }))}
+          />
+        </>
+      )}
       {!check && (
         <>
-          <fieldset className='space-y-3'>
-            <legend className='mb-3 font-medium'>{t('qc.scope')}</legend>
-            <RadioGroup
-              value={scope}
-              onValueChange={(v) => setScope(v as CheckScope)}
-              className='grid gap-3 sm:grid-cols-2'
-            >
-              {(['shared', 'object'] as const).map((v) => (
-                <label
-                  key={v}
-                  className={
-                    'flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ' +
-                    (scope === v
-                      ? 'border-primary/50 bg-primary/5'
-                      : 'hover:bg-muted/50')
-                  }
-                >
-                  <RadioGroupItem value={v} className='mt-0.5' />
-                  <span>
-                    <span className='block font-medium'>
-                      {t('qc.scopeName.' + v)}
-                    </span>
-                    <span className='mt-1 block text-xs leading-5 text-muted-foreground'>
-                      {t('qc.scopeHint.' + v)}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </RadioGroup>
-          </fieldset>
+          <RadioCards
+            legend={t('qc.scope')}
+            value={scope}
+            onChange={setScope}
+            items={(['shared', 'object'] as const).map((v) => ({
+              value: v,
+              label: t('qc.scopeName.' + v),
+              hint: t('qc.scopeHint.' + v),
+            }))}
+          />
           <Field name='name' label={t('qc.checkName')} maxLength={120} />
           <div className='space-y-2'>
             <Field
@@ -496,58 +570,14 @@ export function StandardForm({
         <Field
           key={field}
           name={field}
-          label={t('qc.' + field)}
+          label={t(
+            human && field === 'steps' ? 'qc.stepsOptional' : 'qc.' + field,
+          )}
           multiline
+          required={!human || field !== 'steps'}
           defaultValue={standard?.[field] || ''}
         />
       ))}
-      <fieldset className='space-y-3'>
-        <legend className='mb-3 font-medium'>{t('qc.judgeLabel')}</legend>
-        <RadioGroup
-          value={judgeMode}
-          onValueChange={(v) => setJudgeMode(v as JudgeMode)}
-          className='grid gap-3 sm:grid-cols-2'
-        >
-          {(['script', 'session', 'agent', 'human'] as const).map((v) => (
-            <label
-              key={v}
-              className={
-                'flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ' +
-                (judgeMode === v
-                  ? 'border-primary/50 bg-primary/5'
-                  : 'hover:bg-muted/50')
-              }
-            >
-              <RadioGroupItem value={v} className='mt-0.5' />
-              <span>
-                <span className='block font-medium'>
-                  {t('qc.judgeMode.' + v)}
-                </span>
-                <span className='mt-1 block text-xs leading-5 text-muted-foreground'>
-                  {t('qc.judgeHint.' + v)}
-                </span>
-              </span>
-            </label>
-          ))}
-        </RadioGroup>
-        {judgeMode === 'script' && (
-          <div className='space-y-2'>
-            <Field
-              name='command'
-              label={t('qc.command')}
-              defaultValue={standard?.command ?? ''}
-              maxLength={2000}
-            />
-            <p className='text-xs text-muted-foreground'>
-              {t('qc.commandHint')}
-            </p>
-          </div>
-        )}
-      </fieldset>
-      <label className='flex items-center gap-3 text-sm'>
-        <Checkbox checked={humanReview} onCheckedChange={setHumanReview} />
-        {t('qc.humanRequired')}
-      </label>
       <p className='text-xs leading-6 text-muted-foreground'>
         {t('qc.stepsHint')}
       </p>

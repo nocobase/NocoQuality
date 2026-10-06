@@ -96,6 +96,7 @@ function createFakeAuthorization() {
 }
 
 // Two objects share one dimension; object 3 is paused and object 2 turned the shared Check off.
+// Check 2 is judged by a person, so runs leave it out.
 function seed(): Record<string, Row[]> {
   return {
     qcProjects: [{ id: 1, key: 'p1', name: 'P', type: 'custom', active: true }],
@@ -141,7 +142,7 @@ function seed(): Record<string, Row[]> {
         objectId: 1,
         dimensionId: 1,
         key: 'c2',
-        name: 'Reviewed',
+        name: 'Manual',
         active: true,
         fixMode: 'assign',
         assigneeId: null,
@@ -149,14 +150,15 @@ function seed(): Record<string, Row[]> {
       },
     ],
     qcStandards: [
-      { id: 1, checkId: 1, version: 1, published: true, humanReview: false },
-      { id: 2, checkId: 1, version: 2, published: true, humanReview: false },
-      { id: 3, checkId: 2, version: 1, published: true, humanReview: true },
+      { id: 1, checkId: 1, version: 1, published: true, judgeMode: 'agent' },
+      { id: 2, checkId: 1, version: 2, published: true, judgeMode: 'agent' },
+      { id: 3, checkId: 2, version: 1, published: true, judgeMode: 'human' },
     ],
     qcCheckExclusions: [{ id: 1, projectId: 1, checkId: 1, objectId: 2 }],
     qcRuns: [],
     qcResults: [],
     qcWorkItems: [],
+    qcManualStates: [],
   };
 }
 
@@ -233,7 +235,7 @@ describe('starting and filling a run', () => {
     ).toBe(403);
   });
 
-  it('plans every enabled Check on included objects with its latest standard', async () => {
+  it('plans every enabled automated Check on included objects with its latest standard', async () => {
     const { request } = await setup();
     const response = await request('POST', '/projects/1/runs', {});
     expect(response.status).toBe(201);
@@ -248,11 +250,8 @@ describe('starting and filling a run', () => {
     expect(data.status).toBe('running');
     expect(data.displayStatus).toBe('running');
     expect(data.key).toMatch(/^\d{4}-\d{2}-\d{2}-01$/);
-    // Object 2 turned the shared Check off and object 3 is paused.
-    expect(data.plan).toEqual([
-      { checkId: 1, objectId: 1, standardId: 2 },
-      { checkId: 2, objectId: 1, standardId: 3 },
-    ]);
+    // Object 2 turned the shared Check off, object 3 is paused and Check 2 is judged by a person.
+    expect(data.plan).toEqual([{ checkId: 1, objectId: 1, standardId: 2 }]);
     expect((await request('POST', '/projects/1/runs', {})).status).toBe(409);
   });
 
@@ -268,7 +267,7 @@ describe('starting and filling a run', () => {
       ((await failed.json()) as { data: { progress: unknown } }).data.progress,
     ).toEqual({
       done: 1,
-      total: 2,
+      total: 1,
     });
     expect(tables.get('qcRuns')![0]!.environment).toEqual({
       code: { commit: 'abc' },
@@ -293,29 +292,60 @@ describe('starting and filling a run', () => {
     ).toBe(400);
   });
 
-  it('waits for a person when the standard requires review', async () => {
+  it('leaves human-judged Checks out of runs and refuses their results', async () => {
     const { request, tables } = await setup();
     await request('POST', '/projects/1/runs', {});
-    await request('POST', '/projects/1/runs/1/results', report(2, 1, 'failed'));
-    expect(tables.get('qcResults')).toMatchObject([
-      { reviewStatus: 'pending', reportedConclusion: 'failed' },
-    ]);
-    expect(tables.get('qcWorkItems')).toMatchObject([
-      { kind: 'review', status: 'open', assigneeId: 'root' },
-    ]);
-    const reviewed = await request(
+    const refused = await request(
       'POST',
-      '/projects/1/runs/1/results/1/review',
-      {
-        conclusion: 'passed',
-        note: 'The page has real content.',
-      },
+      '/projects/1/runs/1/results',
+      report(2, 1, 'passed'),
     );
-    expect(reviewed.status).toBe(200);
-    expect(tables.get('qcResults')).toMatchObject([
-      { conclusion: 'passed', reviewStatus: 'confirmed', reviewedBy: 'root' },
-    ]);
-    expect(tables.get('qcWorkItems')).toMatchObject([{ status: 'done' }]);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: { code: 'NOT_IN_PLAN' } });
+    // A run started while the Check was still automated lists it, but a person keeps that state now.
+    tables.get('qcRuns')![0]!.plan = [
+      { checkId: 1, objectId: 1, standardId: 2 },
+      { checkId: 2, objectId: 1, standardId: 3 },
+    ];
+    expect(
+      (
+        await request(
+          'POST',
+          '/projects/1/runs/1/results',
+          report(2, 1, 'failed'),
+        )
+      ).status,
+    ).toBe(400);
+    expect(tables.get('qcResults')).toHaveLength(0);
+    expect(tables.get('qcWorkItems')).toHaveLength(0);
+  });
+
+  it('takes an automated conclusion as reported, without review', async () => {
+    const { request, tables } = await setup();
+    await request('POST', '/projects/1/runs', {});
+    await request('POST', '/projects/1/runs/1/results', report(1, 1, 'passed'));
+    const [result] = tables.get('qcResults')!;
+    expect(result).toMatchObject({ conclusion: 'passed' });
+    expect(result!.reviewStatus).toBeUndefined();
+    expect(
+      (
+        await request('POST', '/projects/1/runs/1/results/1/review', {
+          conclusion: 'failed',
+        })
+      ).status,
+    ).toBe(404);
+    const list = (await (await request('GET', '/projects/1/runs')).json()) as {
+      data: Record<string, unknown>[];
+    };
+    expect(list.data[0]).not.toHaveProperty('pendingReview');
+  });
+
+  it('refuses to start a run that would only hold human-judged Checks', async () => {
+    const { request, tables } = await setup();
+    tables.get('qcChecks')![0]!.active = false;
+    const response = await request('POST', '/projects/1/runs', {});
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: { code: 'EMPTY_PLAN' } });
   });
 
   it('finishes once, notifies assignees of open to-dos and then refuses more results', async () => {
@@ -353,7 +383,7 @@ describe('starting and filling a run', () => {
     };
     expect(list.data[0]).toMatchObject({
       displayStatus: 'overdue',
-      expected: 2,
+      expected: 1,
     });
     // An overdue run no longer blocks the next one.
     expect((await request('POST', '/projects/1/runs', {})).status).toBe(201);
@@ -500,12 +530,21 @@ describe('editing and restoring definitions', () => {
       steps: 's',
       passCriteria: 'c',
       evidence: 'e',
-      humanReview: false,
       judgeMode: 'script',
     };
     expect((await request('POST', '/projects/1/checks', base)).status).toBe(
       400,
     );
+    // Whether a standard requires review is no longer a field.
+    expect(
+      (
+        await request('POST', '/projects/1/checks', {
+          ...base,
+          command: 'node check.mjs',
+          humanReview: true,
+        })
+      ).status,
+    ).toBe(400);
     expect(
       (
         await request('POST', '/projects/1/checks', {
@@ -514,6 +553,63 @@ describe('editing and restoring definitions', () => {
         })
       ).status,
     ).toBe(201);
+  });
+
+  it('needs steps only for an automated Check, and no script for a human-judged one', async () => {
+    const { request, tables } = await setup();
+    const base = {
+      name: 'Docs read well',
+      scope: 'shared',
+      dimensionId: 1,
+      definition: 'd',
+      preconditions: 'p',
+      steps: '',
+      passCriteria: 'c',
+      evidence: 'e',
+    };
+    const automated = await request('POST', '/projects/1/checks', {
+      ...base,
+      judgeMode: 'agent',
+    });
+    expect(await automated.json()).toEqual({
+      error: { code: 'STEPS_REQUIRED' },
+    });
+    const human = await request('POST', '/projects/1/checks', {
+      ...base,
+      judgeMode: 'human',
+      command: 'node ignored.mjs',
+    });
+    expect(human.status).toBe(201);
+    expect(tables.get('qcStandards')!.at(-1)).toMatchObject({
+      judgeMode: 'human',
+      steps: '',
+      command: null,
+    });
+  });
+
+  it('changes the handling with the version that makes a Check automated', async () => {
+    const { request, tables } = await setup();
+    const response = await request('POST', '/projects/1/checks/2/versions', {
+      baseVersion: 1,
+      definition: 'd',
+      preconditions: 'p',
+      steps: 's',
+      passCriteria: 'c',
+      evidence: 'e',
+      judgeMode: 'session',
+      fixMode: 'pr',
+    });
+    expect(response.status).toBe(201);
+    expect(tables.get('qcChecks')![1]).toMatchObject({ fixMode: 'pr' });
+    // The Check is automated again, so the next run plans it.
+    const started = (await (
+      await request('POST', '/projects/1/runs', {})
+    ).json()) as { data: { plan: unknown[] } };
+    expect(started.data.plan).toContainEqual({
+      checkId: 2,
+      objectId: 1,
+      standardId: 4,
+    });
   });
 
   it('renames objects with materials and restores archived ones', async () => {
@@ -547,5 +643,119 @@ describe('editing and restoring definitions', () => {
     expect(
       (await request('POST', '/projects/1/checks/2/restore', {})).status,
     ).toBe(200);
+  });
+});
+
+describe('the state of human-judged Checks', () => {
+  it('rejects anonymous and restricted callers', async () => {
+    const { request } = await setup();
+    const body = {
+      items: [{ checkId: 2, objectId: 1 }],
+      status: 'reviewed',
+    };
+    expect(
+      (await request('POST', '/projects/1/manual-states', body, '')).status,
+    ).toBe(401);
+    expect(
+      (await request('POST', '/projects/1/manual-states', body, 'member'))
+        .status,
+    ).toBe(403);
+    expect(
+      (await request('GET', '/projects/1/manual-states', undefined, 'member'))
+        .status,
+    ).toBe(403);
+  });
+
+  it('records each change with who, when and why, and keeps the history', async () => {
+    const { request } = await setup();
+    const first = await request('POST', '/projects/1/manual-states', {
+      items: [{ checkId: 2, objectId: 1 }],
+      status: 'reviewed',
+      note: 'https://example.com/review/1',
+    });
+    expect(first.status).toBe(201);
+    await request('POST', '/projects/1/manual-states', {
+      items: [{ checkId: 2, objectId: 1 }],
+      status: 'rereview',
+    });
+    const current = (await (
+      await request('GET', '/projects/1/manual-states')
+    ).json()) as { data: Record<string, unknown>[] };
+    expect(current.data).toEqual([
+      expect.objectContaining({
+        checkId: 2,
+        objectId: 1,
+        status: 'rereview',
+        createdBy: 'root',
+      }),
+    ]);
+    const history = (await (
+      await request('GET', '/projects/1/manual-states?checkId=2&objectId=1')
+    ).json()) as { data: Record<string, unknown>[] };
+    expect(history.data.map((h) => [h.status, h.note])).toEqual([
+      ['rereview', null],
+      ['reviewed', 'https://example.com/review/1'],
+    ]);
+    expect(history.data[0]!.createdAt).toEqual(expect.any(String));
+    // The workspace reads the current states with the project.
+    const detail = (await (await request('GET', '/projects/1')).json()) as {
+      data: { manualStates: { status: string }[] };
+    };
+    expect(detail.data.manualStates.map((m) => m.status)).toEqual(['rereview']);
+  });
+
+  it('sets several pairs at once, all or nothing', async () => {
+    const { request, tables } = await setup();
+    // Make the shared Check human-judged too, so it reaches objects 1 and 3 (object 2 turned it off).
+    tables.get('qcStandards')!.push({
+      id: 4,
+      checkId: 1,
+      version: 3,
+      published: true,
+      judgeMode: 'human',
+    });
+    const both = await request('POST', '/projects/1/manual-states', {
+      items: [
+        { checkId: 1, objectId: 1 },
+        { checkId: 1, objectId: 3 },
+        { checkId: 2, objectId: 1 },
+      ],
+      status: 'reviewed',
+    });
+    expect(both.status).toBe(201);
+    expect(tables.get('qcManualStates')).toHaveLength(3);
+    const turnedOff = await request('POST', '/projects/1/manual-states', {
+      items: [
+        { checkId: 1, objectId: 1 },
+        { checkId: 1, objectId: 2 },
+      ],
+      status: 'rereview',
+    });
+    expect(await turnedOff.json()).toEqual({
+      error: { code: 'INVALID_OBJECT' },
+    });
+    expect(tables.get('qcManualStates')).toHaveLength(3);
+  });
+
+  it('accepts only human-judged Checks on objects they apply to', async () => {
+    const { request } = await setup();
+    const set = async (checkId: number, objectId: number) =>
+      (await (
+        await request('POST', '/projects/1/manual-states', {
+          items: [{ checkId, objectId }],
+          status: 'reviewed',
+        })
+      ).json()) as { error?: { code: string } };
+    expect((await set(1, 1)).error?.code).toBe('NOT_MANUAL_CHECK');
+    expect((await set(2, 2)).error?.code).toBe('INVALID_OBJECT');
+    expect((await set(9, 1)).error?.code).toBe('INVALID_CHECK');
+    expect(
+      (
+        await request('POST', '/projects/1/manual-states', {
+          items: [{ checkId: 2, objectId: 1 }],
+          status: 'passed',
+        })
+      ).status,
+    ).toBe(400);
   });
 });

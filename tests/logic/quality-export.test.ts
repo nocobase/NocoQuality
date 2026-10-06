@@ -214,6 +214,18 @@ function seed(): Record<string, Row[]> {
         status: 'open',
       },
     ],
+    qcManualStates: [
+      {
+        id: 1,
+        projectId: 1,
+        checkId: 1,
+        objectId: 1,
+        status: 'reviewed',
+        note: null,
+        createdBy: 'u2',
+        createdAt: '2026-10-06T00:00:00.000Z',
+      },
+    ],
   };
 }
 

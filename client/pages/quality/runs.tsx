@@ -15,7 +15,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -41,7 +40,16 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cellScore, itemForResult, runProgress, skipReason } from './model.js';
+import {
+  cellScore,
+  cellTone,
+  isManual,
+  itemForResult,
+  runProgress,
+  skipReason,
+  type CellScore,
+} from './model.js';
+import { ManualChecks } from './manual.js';
 import { RunDispatch, RunProgress, RunStatusBadge } from './run-status.js';
 import type {
   Check,
@@ -64,34 +72,29 @@ type Go = (view: string, extra?: Record<string, string>) => void;
 export function ScoreChip({
   score,
   passed,
-  total,
-  complete,
   expected,
-  pending = 0,
-}: {
-  score: number;
-  passed: number;
-  total: number;
-  complete: boolean;
-  expected: number;
-  pending?: number;
-}) {
+  complete,
+  done,
+  automated,
+  failed,
+  manualPending,
+}: CellScore) {
   const { t } = useTranslation();
-  // An unfinished cell has no score yet, but a failure or a waiting review already shows.
+  // An unfinished cell has no score yet, but a failure or a human Check still to review already shows.
   if (!complete)
     return (
       <span className='text-xs'>
         <span className='text-muted-foreground'>
-          {t('qc.runProgress', { done: total + pending, total: expected })}
+          {t('qc.runProgress', { done, total: automated })}
         </span>
-        {total > passed && (
+        {failed > 0 && (
           <span className='block font-medium'>
-            {t('qc.runFailed')} {total - passed}
+            {t('qc.runFailed')} {failed}
           </span>
         )}
-        {pending > 0 && (
+        {manualPending > 0 && (
           <span className='block'>
-            {t('qc.reviewPending')} {pending}
+            {t('qc.manual.pending', { count: manualPending })}
           </span>
         )}
       </span>
@@ -102,7 +105,7 @@ export function ScoreChip({
         {score.toFixed(1)}
       </strong>
       <span className='text-[11px] tabular-nums opacity-80'>
-        {passed}/{total}
+        {passed}/{expected}
       </span>
     </span>
   );
@@ -189,11 +192,6 @@ export function RunList({
                 <TableCell className='text-sm'>{time(run.startedAt)}</TableCell>
                 <TableCell className='text-sm tabular-nums'>
                   {run.passed + run.failed} / {run.expected}
-                  {run.pendingReview > 0 && (
-                    <span className='ml-2 text-xs text-muted-foreground'>
-                      {t('qc.reviewPending')} {run.pendingReview}
-                    </span>
-                  )}
                 </TableCell>
                 <TableCell className='font-mono text-xs'>
                   code {shortSha(run.environment?.code?.commit)}
@@ -260,19 +258,15 @@ function ResultCard({
   result,
   item,
   users,
-  onChanged,
 }: {
   detail: Detail;
   result: Result;
   item?: WorkItem;
   users: QualityUser[];
-  onChanged?: () => void;
 }) {
   const { t } = useTranslation();
   const failed = result.conclusion === 'failed';
-  const pending = result.reviewStatus === 'pending';
-  const reason =
-    !item && failed && !pending ? skipReason(detail, result) : null;
+  const reason = !item && failed ? skipReason(detail, result) : null;
   const [open, setOpen] = useState(failed);
   const check = detail.checks.find((c) => c.id === result.checkId);
   const version = detail.standards.find((s) => s.id === result.standardId);
@@ -285,13 +279,7 @@ function ResultCard({
     >
       <div className='flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-5 py-3'>
         <div className='flex min-w-0 items-center gap-3'>
-          {pending ? (
-            <Badge variant='outline' className='qc-tone qc-tone-warn'>
-              {t('qc.reviewPending')}
-            </Badge>
-          ) : (
-            <StatusBadge kind='result' value={result.conclusion} />
-          )}
+          <StatusBadge kind='result' value={result.conclusion} />
           <h3 className='truncate text-base font-semibold'>
             {check?.name ?? '#' + result.checkId}
           </h3>
@@ -317,9 +305,7 @@ function ResultCard({
         </div>
       </div>
       <div className='space-y-4 p-5'>
-        {pending && (
-          <ReviewForm detail={detail} result={result} onChanged={onChanged} />
-        )}
+        {/* Reviewed under the removed human review of results; kept as history. */}
         {result.reviewStatus === 'confirmed' && (
           <p className='text-xs text-muted-foreground'>
             {t('qc.reviewedBy', {
@@ -363,69 +349,8 @@ function ResultCard({
   );
 }
 
-// A person confirms a result whose standard requires review; only then does it count toward the score.
-function ReviewForm({
-  detail,
-  result,
-  onChanged,
-}: {
-  detail: Detail;
-  result: Result;
-  onChanged?: () => void;
-}) {
-  const { t } = useTranslation();
-  const { submit, busy, error } = useSubmission();
-  const [note, setNote] = useState('');
-  const send = (conclusion: 'passed' | 'failed') =>
-    void submit(
-      'quality/projects/' +
-        detail.project.id +
-        '/runs/' +
-        result.runId +
-        '/results/' +
-        result.id +
-        '/review',
-      { conclusion, ...(note.trim() ? { note: note.trim() } : {}) },
-      () => onChanged?.(),
-    );
-  return (
-    <div className='qc-tone qc-tone-warn space-y-3 rounded-lg border p-4'>
-      <p className='text-sm'>
-        {t('qc.reviewHint', {
-          conclusion: t(
-            'qc.resultStatus.' +
-              (result.reportedConclusion ?? result.conclusion),
-          ),
-        })}
-      </p>
-      <Textarea
-        aria-label={t('qc.reviewNoteLabel')}
-        placeholder={t('qc.reviewNoteLabel')}
-        value={note}
-        maxLength={5000}
-        rows={2}
-        className='bg-background text-foreground'
-        onChange={(e) => setNote(e.target.value)}
-      />
-      <div className='flex flex-wrap gap-2'>
-        <Button size='sm' disabled={busy} onClick={() => send('passed')}>
-          {t('qc.confirmPassed')}
-        </Button>
-        <Button
-          size='sm'
-          variant='destructive'
-          disabled={busy}
-          onClick={() => send('failed')}
-        >
-          {t('qc.confirmFailed')}
-        </Button>
-      </div>
-      {error && <p className='text-sm text-destructive'>{error}</p>}
-    </div>
-  );
-}
-
-// One cell's results in a wide side panel, reachable from the run page and from the overall matrix.
+// One cell's results and human-judged Checks in a wide side panel, reachable from the run page and from the overall
+// matrix. A cell with only human-judged Checks opens without a run.
 export function CellResultsSheet({
   detail,
   data,
@@ -443,14 +368,13 @@ export function CellResultsSheet({
 }) {
   const { t } = useTranslation();
   const users = useUsers();
-  const scored =
-    cell && data ? cellScore(detail, data.results, cell.o, cell.d) : null;
+  const scored = cell ? cellScore(detail, data?.results, cell.o, cell.d) : null;
   const rows = [...(scored?.rows ?? [])].sort((a, b) =>
     a.conclusion === b.conclusion ? 0 : a.conclusion === 'failed' ? -1 : 1,
   );
   return (
     <Sheet
-      open={!!cell && !!data}
+      open={!!cell && !!scored}
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
@@ -465,20 +389,19 @@ export function CellResultsSheet({
                 {detail.dimensions.find((d) => d.id === cell?.d)?.name}
               </SheetTitle>
               <SheetDescription className='mt-1'>
-                {t('qc.runKey')}{' '}
-                <span className='font-mono'>{data?.run.key}</span> ·{' '}
+                {data && (
+                  <>
+                    {t('qc.runKey')}{' '}
+                    <span className='font-mono'>{data.run.key}</span> ·{' '}
+                  </>
+                )}
                 {t('qc.scoreRule')}
               </SheetDescription>
             </div>
             {scored && (
               <div
                 className={
-                  'qc-tone rounded-xl border px-4 py-2 ' +
-                  (!scored.complete
-                    ? 'qc-tone-muted'
-                    : scored.passed === scored.total
-                      ? 'qc-tone-good'
-                      : 'qc-tone-bad')
+                  'qc-tone rounded-xl border px-4 py-2 ' + cellTone(scored)
                 }
               >
                 <ScoreChip {...scored} />
@@ -498,6 +421,12 @@ export function CellResultsSheet({
           )}
         </SheetHeader>
         <div className='space-y-4 px-6 pb-8'>
+          <ManualChecks
+            detail={detail}
+            entries={scored?.manual ?? []}
+            users={users}
+            onChanged={onChanged}
+          />
           {rows.map((r) => (
             <ResultCard
               key={r.id}
@@ -505,7 +434,6 @@ export function CellResultsSheet({
               result={r}
               item={data ? itemForResult(data.workItems, r) : undefined}
               users={users}
-              onChanged={onChanged}
             />
           ))}
         </div>
@@ -556,10 +484,7 @@ export function RunView({
       .map((c) => c.dimensionId),
   );
   const skipped = results.filter(
-    (r) =>
-      r.conclusion === 'failed' &&
-      r.reviewStatus !== 'pending' &&
-      !itemForResult(workItems, r),
+    (r) => r.conclusion === 'failed' && !itemForResult(workItems, r),
   ).length;
   const { done, total } = runProgress(run, results);
   const dimensions = detail.dimensions.filter((d) => checkDims.has(d.id));
@@ -570,12 +495,7 @@ export function RunView({
         results.some((r) => r.objectId === o.id && r.conclusion === 'failed')),
   );
   const groups = Array.from(new Set(objects.map((o) => o.category)));
-  const passed = results.filter(
-    (r) => r.conclusion === 'passed' && r.reviewStatus !== 'pending',
-  ).length;
-  const pendingReview = results.filter(
-    (r) => r.reviewStatus === 'pending',
-  ).length;
+  const passed = results.filter((r) => r.conclusion === 'passed').length;
   const env = run.environment;
   return (
     <div className='space-y-5'>
@@ -606,13 +526,8 @@ export function RunView({
                   {t('qc.runPassed')} {passed}
                 </Badge>
                 <Badge variant='outline' className='qc-tone qc-tone-bad'>
-                  {t('qc.runFailed')} {results.length - passed - pendingReview}
+                  {t('qc.runFailed')} {results.length - passed}
                 </Badge>
-                {pendingReview > 0 && (
-                  <Badge variant='outline' className='qc-tone qc-tone-warn'>
-                    {t('qc.reviewPending')} {pendingReview}
-                  </Badge>
-                )}
                 {total > done && (
                   <Badge variant='outline' className='qc-tone qc-tone-muted'>
                     {t('qc.notRun')} {total - done}
@@ -720,13 +635,7 @@ export function RunView({
                                     type='button'
                                     className={
                                       'flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring qc-tone ' +
-                                      (s.total > s.passed
-                                        ? 'qc-tone-bad'
-                                        : s.pending
-                                          ? 'qc-tone-warn'
-                                          : !s.complete
-                                            ? 'qc-tone-muted'
-                                            : 'qc-tone-good')
+                                      cellTone(s)
                                     }
                                     onClick={() =>
                                       setCell({ o: o.id, d: d.id })
@@ -882,13 +791,7 @@ function WorkItemHistory({ history }: { history: WorkItemHistoryEntry[] }) {
           <li key={h.id} className='space-y-1 px-4 py-3 text-sm'>
             <div className='flex flex-wrap items-center gap-2'>
               <span className='font-mono text-xs'>{h.runKey}</span>
-              {h.reviewStatus === 'pending' ? (
-                <Badge variant='outline' className='qc-tone qc-tone-warn'>
-                  {t('qc.reviewPending')}
-                </Badge>
-              ) : (
-                <StatusBadge kind='result' value={h.conclusion} />
-              )}
+              <StatusBadge kind='result' value={h.conclusion} />
               {h.prUrl && (
                 <a
                   href={h.prUrl}
@@ -1310,6 +1213,8 @@ export function CheckSettings({
   const { t } = useTranslation();
   const users = useUsers();
   const { submit, busy, error } = useSubmission();
+  // A human-judged Check is not run, so it has no failures to handle; it keeps only its owner.
+  const manual = isManual(detail, check.id);
   const [fixMode, setFixMode] = useState<FixMode>(check.fixMode);
   const [assignee, setAssignee] = useState(check.assigneeId ?? '');
   const changed =
@@ -1327,35 +1232,45 @@ export function CheckSettings({
       <CardContent className='space-y-4 p-5'>
         <SectionTitle
           icon={<GitPullRequest />}
-          title={t('qc.fixSettings')}
-          description={t('qc.fixSettingsHint')}
+          title={t(manual ? 'qc.manual.owner' : 'qc.fixSettings')}
+          description={t(manual ? 'qc.manual.hint' : 'qc.fixSettingsHint')}
         />
-        <div className='space-y-2'>
-          <Label>{t('qc.fixModeLabel')}</Label>
-          <Select
-            value={fixMode}
-            items={modes}
-            onValueChange={(v) => {
-              if (v) setFixMode(v);
-            }}
-          >
-            <SelectTrigger
-              className='w-full bg-card'
-              aria-label={t('qc.fixModeLabel')}
+        {!manual && (
+          <div className='space-y-2'>
+            <Label>{t('qc.fixModeLabel')}</Label>
+            <Select
+              value={fixMode}
+              items={modes}
+              onValueChange={(v) => {
+                if (v) setFixMode(v);
+              }}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {modes.map((m) => (
-                <SelectItem key={m.value} value={m.value}>
-                  {m.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+              <SelectTrigger
+                className='w-full bg-card'
+                aria-label={t('qc.fixModeLabel')}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {modes.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <div className='space-y-2'>
-          <Label>{t(fixMode === 'pr' ? 'qc.reviewer' : 'qc.handler')}</Label>
+          <Label>
+            {t(
+              manual
+                ? 'qc.manual.owner'
+                : fixMode === 'pr'
+                  ? 'qc.reviewer'
+                  : 'qc.handler',
+            )}
+          </Label>
           <Select
             value={assignee}
             items={people}

@@ -1,9 +1,16 @@
 import { useTranslation } from '@nocobase/i18n/client';
 import { Fragment, useState } from 'react';
-import { ChevronRight, CirclePause, Plus, Search } from 'lucide-react';
+import {
+  ChevronRight,
+  CirclePause,
+  ListChecks,
+  Plus,
+  Search,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -23,14 +30,20 @@ import {
 import type { Detail, RunDetail } from './types.js';
 import {
   cellScore,
+  cellTone,
   testedApplicability,
   checksFor,
   effectiveCount,
+  isApplicable,
+  manualChecksFor,
+  manualPairs,
 } from './model.js';
-import { Empty } from './form.js';
+import { Choice, Empty } from './form.js';
+import { ManualStateForm } from './manual.js';
 import { CellResultsSheet, ScoreChip } from './runs.js';
 import { useLatestRun } from './use-quality-data.js';
-// The quality matrix: objects by dimensions, each cell showing its latest run score or what is missing.
+// The quality matrix: objects by dimensions, each cell showing its score or what is missing. Batch mode selects
+// cells to set the state of their human-judged Checks at once.
 
 export function Coverage({
   detail,
@@ -53,6 +66,9 @@ export function Coverage({
   const [cell, setCell] = useState<{ o: number; d: number } | null>(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
+  const [batch, setBatch] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const hasManual = manualPairs(detail).length > 0;
   const objects = detail.objects.filter(
     (o) =>
       (category === 'all' || o.category === category) &&
@@ -107,6 +123,12 @@ export function Coverage({
               ))}
             </SelectContent>
           </Select>
+          {hasManual && !batch && (
+            <Button variant='outline' onClick={() => setBatch(true)}>
+              <ListChecks />
+              {t('qc.manual.batch')}
+            </Button>
+          )}
           <div className='ml-auto flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground'>
             <span className='flex items-center gap-1.5'>
               <span className='qc-dot qc-tone-primary' />
@@ -118,6 +140,20 @@ export function Coverage({
             </span>
           </div>
         </div>
+        {batch && (
+          <ManualBatch
+            detail={detail}
+            selected={selected}
+            onSaved={() => {
+              setSelected([]);
+              onChanged();
+            }}
+            onDone={() => {
+              setBatch(false);
+              setSelected([]);
+            }}
+          />
+        )}
         {objects.length ? (
           <div className='overflow-x-auto rounded-xl border'>
             <Table className='qc-matrix'>
@@ -195,15 +231,34 @@ export function Coverage({
                         </TableCell>
                         {detail.dimensions.map((d) => (
                           <TableCell key={d.id} className='min-w-36 p-1.5'>
-                            <MatrixCell
-                              detail={detail}
-                              paused={o.testingPaused}
-                              objectId={o.id}
-                              dimensionId={d.id}
-                              latest={latest}
-                              onScore={() => setCell({ o: o.id, d: d.id })}
-                              onCell={() => onCell(o.id, d.id)}
-                            />
+                            {batch ? (
+                              <BatchCell
+                                detail={detail}
+                                paused={o.testingPaused}
+                                objectId={o.id}
+                                dimensionId={d.id}
+                                checked={selected.includes(o.id + ':' + d.id)}
+                                onCheckedChange={(on) =>
+                                  setSelected((v) =>
+                                    on
+                                      ? [...v, o.id + ':' + d.id]
+                                      : v.filter(
+                                          (k) => k !== o.id + ':' + d.id,
+                                        ),
+                                  )
+                                }
+                              />
+                            ) : (
+                              <MatrixCell
+                                detail={detail}
+                                paused={o.testingPaused}
+                                objectId={o.id}
+                                dimensionId={d.id}
+                                latest={latest}
+                                onScore={() => setCell({ o: o.id, d: d.id })}
+                                onCell={() => onCell(o.id, d.id)}
+                              />
+                            )}
                           </TableCell>
                         ))}
                       </TableRow>
@@ -261,12 +316,9 @@ function MatrixCell({
   onCell: () => void;
 }) {
   const { t } = useTranslation();
-  const scored = latest
-    ? cellScore(detail, latest.results, objectId, dimensionId)
-    : null;
-  const applicable = detail.applicability.some(
-    (a) => a.objectId === objectId && a.dimensionId === dimensionId,
-  );
+  // A cell with only human-judged Checks scores without a run.
+  const scored = cellScore(detail, latest?.results, objectId, dimensionId);
+  const applicable = isApplicable(detail, objectId, dimensionId);
   const { enabledShared, own } = checksFor(detail, objectId, dimensionId);
   const count = enabledShared.length + own.length;
   const breakdown = t('qc.cellBreakdown', {
@@ -283,22 +335,12 @@ function MatrixCell({
         <span className='sr-only'>{t('qc.paused')}</span>
       </span>
     );
-  if (scored && latest)
+  if (scored)
     return (
       <button
         type='button'
-        className={
-          base +
-          'qc-tone ' +
-          (scored.total > scored.passed
-            ? 'qc-tone-bad'
-            : scored.pending
-              ? 'qc-tone-warn'
-              : !scored.complete
-                ? 'qc-tone-muted'
-                : 'qc-tone-good')
-        }
-        title={latest.run.key}
+        className={base + 'qc-tone ' + cellTone(scored)}
+        title={latest?.run.key}
         onClick={onScore}
       >
         <ScoreChip {...scored} />
@@ -343,5 +385,130 @@ function MatrixCell({
         {t('qc.defineCheck')}
       </span>
     </button>
+  );
+}
+
+// A cell in batch mode: selectable when it holds human-judged Checks of an object in testing.
+function BatchCell({
+  detail,
+  paused,
+  objectId,
+  dimensionId,
+  checked,
+  onCheckedChange,
+}: {
+  detail: Detail;
+  paused: boolean;
+  objectId: number;
+  dimensionId: number;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const manual = paused ? [] : manualChecksFor(detail, objectId, dimensionId);
+  if (!manual.length)
+    return (
+      <span className='block px-3 text-center text-xs text-muted-foreground/60'>
+        —
+      </span>
+    );
+  const reviewed = manual.filter((m) => m.status === 'reviewed').length;
+  return (
+    <label
+      className={
+        'flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ' +
+        (checked ? 'border-primary/50 bg-primary/5' : 'hover:bg-muted/50')
+      }
+    >
+      <Checkbox checked={checked} onCheckedChange={onCheckedChange} />
+      <span className='sr-only'>
+        {t('qc.manual.selectCell', {
+          object: detail.objects.find((o) => o.id === objectId)?.name,
+          dimension: detail.dimensions.find((d) => d.id === dimensionId)?.name,
+        })}
+      </span>
+      <span>
+        <span className='font-medium'>
+          {reviewed}/{manual.length}
+        </span>
+        <span className='block opacity-75'>
+          {t('qc.manual.status.reviewed')}
+        </span>
+      </span>
+    </label>
+  );
+}
+
+// Sets one state on the human-judged Checks of the selected cells, or on one of those Checks only.
+function ManualBatch({
+  detail,
+  selected,
+  onSaved,
+  onDone,
+}: {
+  detail: Detail;
+  selected: string[];
+  onSaved: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const [checkId, setCheckId] = useState('all');
+  const [applied, setApplied] = useState(0);
+  const entries = selected.flatMap((key) => {
+    const [o, d] = key.split(':').map(Number);
+    return manualChecksFor(detail, o, d);
+  });
+  const checks = [
+    ...new Map(entries.map((e) => [e.check.id, e.check])).values(),
+  ];
+  // A Check chosen earlier may have left the selection; then the batch covers them all.
+  const only = checks.some((c) => String(c.id) === checkId) ? checkId : 'all';
+  const items = entries
+    .filter((e) => only === 'all' || String(e.check.id) === only)
+    .map((e) => ({ checkId: e.check.id, objectId: e.objectId }));
+  return (
+    <div className='space-y-4 rounded-xl border bg-muted/30 p-4'>
+      <div className='flex flex-wrap items-start justify-between gap-3'>
+        <div>
+          <p className='font-medium'>{t('qc.manual.batch')}</p>
+          <p className='mt-1 text-xs text-muted-foreground'>
+            {t('qc.manual.batchHint')}
+          </p>
+        </div>
+        <Button variant='ghost' size='sm' onClick={onDone}>
+          {t('qc.manual.done')}
+        </Button>
+      </div>
+      <div className='grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end'>
+        <Choice
+          label={t('qc.manual.batchCheck')}
+          value={only}
+          onChange={setCheckId}
+          items={[
+            { value: 'all', label: t('qc.manual.batchAll') },
+            ...checks.map((c) => ({ value: String(c.id), label: c.name })),
+          ]}
+        />
+        <p className='text-sm text-muted-foreground'>
+          {t('qc.manual.selected', {
+            cells: selected.length,
+            pairs: items.length,
+          })}
+        </p>
+      </div>
+      <ManualStateForm
+        detail={detail}
+        items={items}
+        onSaved={(count) => {
+          setApplied(count);
+          onSaved();
+        }}
+      />
+      {applied > 0 && (
+        <p className='text-sm text-muted-foreground'>
+          {t('qc.manual.applied', { count: applied })}
+        </p>
+      )}
+    </div>
   );
 }

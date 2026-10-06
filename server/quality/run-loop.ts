@@ -45,15 +45,8 @@ export const runFinishSchema = z
   .strict();
 export type RunFinish = z.infer<typeof runFinishSchema>;
 
-export const reviewSchema = z
-  .object({
-    conclusion: z.enum(['passed', 'failed']),
-    note: z.string().trim().max(5000).optional(),
-  })
-  .strict();
-export type Review = z.infer<typeof reviewSchema>;
-
-// Every enabled Check on every object it applies to, minus paused objects and objects that turned it off.
+// Every enabled automated Check on every object it applies to, minus paused objects and objects that turned it off.
+// A human-judged Check is not run: a person keeps its state for each object (see manual-states.ts).
 export async function buildPlan(conn: Conn, projectId: number) {
   const checks = await conn
     .repository<Check>('qcChecks')
@@ -80,6 +73,7 @@ export async function buildPlan(conn: Conn, projectId: number) {
       .findMany({ filter: { checkId: check.id, published: true } });
     if (!versions.length) continue;
     const standard = versions.reduce((a, b) => (b.version > a.version ? b : a));
+    if (standard.judgeMode === 'human') continue;
     const targets = applicability
       .filter(
         (a) =>
@@ -174,9 +168,8 @@ async function findRun(conn: Conn, projectId: number, runId: number) {
   return run;
 }
 
-// Keeps one to-do per Check × object in step with its results: a review to-do while a person must confirm a result,
-// a PR review or manual to-do while it fails, and done (by the system) once the result it tracks passes or is
-// skipped. A later run that fails a pair with an open to-do updates that to-do (lastRunId, lastResultId, occurrences)
+// Keeps one to-do per Check × object in step with its results: a PR review or manual to-do while it fails, and done
+// (by the system) once the result it tracks passes or is skipped. A later run that fails a pair with an open to-do updates that to-do (lastRunId, lastResultId, occurrences)
 // instead of adding another, and keeps its PR when the new result brings none. A to-do someone marked done stays done;
 // the next failure of that pair opens a new one.
 async function syncWorkItem(
@@ -218,22 +211,16 @@ async function syncWorkItem(
   const prUrl = result.prUrl ?? own?.prUrl ?? open?.prUrl ?? null;
   const kind: WorkItem['kind'] | null = skipped
     ? null
-    : result.reviewStatus === 'pending'
-      ? 'review'
-      : result.conclusion === 'failed'
-        ? prUrl
-          ? 'pr_review'
-          : 'manual'
-        : null;
+    : result.conclusion === 'failed'
+      ? prUrl
+        ? 'pr_review'
+        : 'manual'
+      : null;
   const now = new Date().toISOString();
   if (kind) {
     const values = {
       kind,
-      title:
-        (kind === 'review' ? '复核：' : '') +
-        check!.name +
-        ' · ' +
-        object!.name,
+      title: check!.name + ' · ' + object!.name,
       assigneeId: check!.assigneeId || run.triggeredBy || actor,
       prUrl,
       ...(result.prUrl ? { prState: 'open' as const } : {}),
@@ -294,20 +281,19 @@ export async function recordResult(
     const item = run.plan.find(
       (p) => p.checkId === input.checkId && p.objectId === input.objectId,
     );
-    if (!item) throw new HTTPException(400, { message: 'NOT_IN_PLAN' });
-    const standard = await conn
-      .repository<Standard>('qcStandards')
-      .findOne({ filter: { id: item.standardId } });
+    // A run started before its Check became human-judged may still list it; a person keeps that state now.
+    const standard = item
+      ? await conn
+          .repository<Standard>('qcStandards')
+          .findOne({ filter: { id: item.standardId } })
+      : null;
+    if (!item || standard?.judgeMode === 'human')
+      throw new HTTPException(400, { message: 'NOT_IN_PLAN' });
     const now = new Date().toISOString();
+    // The reported conclusion takes effect as it is.
     const values = {
       standardId: item.standardId,
       conclusion: input.conclusion,
-      reportedConclusion: input.conclusion,
-      // New evidence needs a fresh review.
-      reviewStatus: standard?.humanReview ? 'pending' : null,
-      reviewedBy: null,
-      reviewedAt: null,
-      reviewNote: null,
       note: input.note ?? null,
       evidence: input.evidence,
       evidencePath: input.evidencePath ?? null,
@@ -342,41 +328,6 @@ export async function recordResult(
     await syncWorkItem(conn, run, result, actor);
     const done = await repo.count({ filter: { runId } });
     return { result, progress: { done, total: run.plan.length } };
-  });
-}
-
-export async function reviewResult(
-  db: DatabaseManager,
-  projectId: number,
-  runId: number,
-  resultId: number,
-  input: Review,
-  actor: string,
-) {
-  return db.transaction(async (conn) => {
-    const run = await findRun(conn, projectId, runId);
-    const repo = conn.repository<Result>('qcResults');
-    const existing = await repo.findOne({
-      filter: { id: resultId, runId, projectId },
-    });
-    if (!existing)
-      throw new HTTPException(404, { message: 'RESULT_NOT_FOUND' });
-    if (!existing.reviewStatus)
-      throw new HTTPException(409, { message: 'REVIEW_NOT_REQUIRED' });
-    const result = (
-      await repo.updateOne({
-        filter: { id: resultId },
-        values: {
-          conclusion: input.conclusion,
-          reviewStatus: 'confirmed',
-          reviewedBy: actor,
-          reviewedAt: new Date().toISOString(),
-          reviewNote: input.note || null,
-        },
-      })
-    ).record;
-    await syncWorkItem(conn, run, result, actor);
-    return result;
   });
 }
 
@@ -425,7 +376,7 @@ export async function finishRun(
             to: assignee,
             title:
               '质量中心：轮次 ' + outcome.run.key + ' 有 ' + count + ' 条待办',
-            body: '本轮有不通过或待复核的检查结果需要你处理，点击查看待办。',
+            body: '本轮有不通过的检查结果需要你处理，点击查看待办。',
             target: {
               type: 'route',
               path: '/quality?project=' + projectId + '&view=todo',

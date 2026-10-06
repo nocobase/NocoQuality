@@ -30,9 +30,9 @@ import {
 import type { Check, Detail, RunDetail } from './types.js';
 import { activeApplicability, inheritingObjects, isExcluded } from './model.js';
 import { Empty } from './form.js';
-import { SectionTitle, StatusBadge } from './ui.js';
+import { CheckConclusion, SectionTitle } from './ui.js';
 import { useSubmission } from './use-submission.js';
-import { latestConclusion, latestVersion } from './model.js';
+import { latestVersion } from './model.js';
 // The Check library: shared and object Checks, per-object switches and deletion.
 
 // Turns one shared Check off or on for one object; the Check keeps applying to the rest of its dimension.
@@ -250,13 +250,11 @@ export function CheckList({
                               v{latestVersion(detail, c.id)}
                             </TableCell>
                             <TableCell>
-                              <StatusBadge
-                                kind='result'
-                                value={latestConclusion(
-                                  latest?.results,
-                                  c.id,
-                                  objectId,
-                                )}
+                              <CheckConclusion
+                                detail={detail}
+                                check={c}
+                                results={latest?.results}
+                                objectId={objectId}
                               />
                             </TableCell>
                           </TableRow>
@@ -308,9 +306,10 @@ export function CheckList({
                           <TableCell>{dimensionName(c.dimensionId)}</TableCell>
                           <TableCell>v{latestVersion(detail, c.id)}</TableCell>
                           <TableCell>
-                            <StatusBadge
-                              kind='result'
-                              value={latestConclusion(latest?.results, c.id)}
+                            <CheckConclusion
+                              detail={detail}
+                              check={c}
+                              results={latest?.results}
                             />
                           </TableCell>
                         </TableRow>
@@ -457,13 +456,11 @@ export function InheritingObjects({
                   </span>
                   {enabled && (
                     <span className='mt-1 block'>
-                      <StatusBadge
-                        kind='result'
-                        value={latestConclusion(
-                          latest?.results,
-                          check.id,
-                          o.id,
-                        )}
+                      <CheckConclusion
+                        detail={detail}
+                        check={check}
+                        results={latest?.results}
+                        objectId={o.id}
                       />
                     </span>
                   )}

@@ -58,13 +58,25 @@ export interface Standard {
   steps: string;
   passCriteria: string;
   evidence: string;
-  humanReview: boolean;
   published: boolean;
   judgeMode: JudgeMode;
   command: string | null;
 }
-// Who decides a Check's conclusion: a script, the executing Agent, a separate session, or a person.
+// Who decides a Check's conclusion: a script, the executing Agent or a separate session. A human-judged Check is
+// not run; a person keeps its state for each object.
 export type JudgeMode = 'script' | 'agent' | 'session' | 'human';
+export type ManualStatus = 'unreviewed' | 'reviewed' | 'rereview';
+// The latest change to a human-judged Check on one object; a pair without one is unreviewed.
+export interface ManualState {
+  id: number;
+  projectId: number;
+  checkId: number;
+  objectId: number;
+  status: ManualStatus;
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
 // An object that turned off one shared Check; absence means the Check applies.
 export interface CheckExclusion {
   id: number;
@@ -88,6 +100,7 @@ export interface Detail {
   standards: Standard[];
   applicability: Applicability[];
   exclusions: CheckExclusion[];
+  manualStates: ManualState[];
 }
 export type FixMode = 'pr' | 'assign';
 export interface RunStep {
@@ -137,7 +150,6 @@ export interface PlanItem {
 }
 export interface RunSummary extends Run {
   expected: number;
-  pendingReview: number;
   passed: number;
   failed: number;
   openItems: number;
@@ -154,7 +166,8 @@ export interface Result {
   evidence: string | null;
   evidencePath: string | null;
   prUrl: string | null;
-  reviewStatus?: 'pending' | 'confirmed' | null;
+  // History of the removed human review of results.
+  reviewStatus?: 'confirmed' | null;
   reportedConclusion?: 'passed' | 'failed' | null;
   reviewedBy?: string | null;
   reviewedAt?: string | null;
@@ -206,7 +219,6 @@ export interface WorkItemHistoryEntry {
   runKey: string;
   startedAt: string;
   conclusion: 'passed' | 'failed';
-  reviewStatus?: 'pending' | 'confirmed' | null;
   note: string | null;
   prUrl: string | null;
 }

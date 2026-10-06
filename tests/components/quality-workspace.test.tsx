@@ -90,7 +90,6 @@ const detail: Detail = {
       steps: '充值后消费',
       passCriteria: '账实一致',
       evidence: '脱敏流水',
-      humanReview: true,
       published: true,
       judgeMode: 'agent',
       command: null,
@@ -98,6 +97,7 @@ const detail: Detail = {
   ],
   applicability: [{ id: 16, projectId: 10, objectId: 12, dimensionId: 11 }],
   exclusions: [],
+  manualStates: [],
 };
 function show(view: string) {
   return render(
@@ -538,7 +538,6 @@ describe('quality workspace', () => {
                       {
                         ...run,
                         expected: 2,
-                        pendingReview: 0,
                         passed: 0,
                         failed: 1,
                         openItems: 0,
@@ -563,71 +562,240 @@ describe('quality workspace', () => {
     // A run still within its deadline blocks the next one.
     expect(screen.getByRole('button', { name: /qc.startRun/ })).toBeDisabled();
   });
-  it('asks a person to confirm a result whose standard requires review', async () => {
-    const run = {
-      id: 70,
-      projectId: 10,
-      key: '2026-10-04-03',
-      status: 'completed',
-      displayStatus: 'completed',
-      executor: 'local',
-      startedAt: '2026-10-04T10:00:00Z',
-      finishedAt: '2026-10-04T11:00:00Z',
-      environment: null,
-      importedAt: '2026-10-04T10:00:00Z',
-      plan: [{ checkId: 14, objectId: 12, standardId: 15 }],
-    };
-    const results = [
-      {
-        id: 71,
-        runId: 70,
-        checkId: 14,
-        standardId: 15,
-        objectId: 12,
-        conclusion: 'failed',
-        reportedConclusion: 'failed',
-        reviewStatus: 'pending',
-        note: '页面只有标题',
-        evidence: '正文 0 字',
-        evidencePath: null,
-        prUrl: null,
-      },
-    ];
+  it('creates a human Check without handling, steps or script', async () => {
     api.request.mockImplementation(
       async ({ path, method }: { path: string; method?: string }) => ({
         data:
           method === 'POST'
-            ? results[0]
+            ? { id: 90 }
             : path === 'quality/projects'
               ? [detail.project]
-              : path.endsWith('/runs/70')
-                ? { run, results, workItems: [] }
-                : path.endsWith('/runs') ||
-                    path === 'quality/users' ||
-                    path.includes('/work-items')
-                  ? []
-                  : path === 'quality/execution'
-                    ? { nocoproject: false }
-                    : structuredClone(detail),
+              : path === 'quality/users' || path.endsWith('/runs')
+                ? []
+                : structuredClone(detail),
       }),
     );
     const user = userEvent.setup();
-    show('run&record=70');
-    await user.click(
-      await screen.findByRole('button', { name: /qc.runProgress/ }),
-    );
-    expect(await screen.findByText('qc.reviewHint')).toBeVisible();
+    show('new-check');
+    // Automated is the default: who judges it and how a failure is handled are asked for.
+    expect(
+      await screen.findByText('qc.fixModeLabel', { selector: 'legend' }),
+    ).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'qc.steps' })).toBeRequired();
+    await user.click(screen.getByText('qc.checkKindName.human'));
+    expect(
+      screen.queryByText('qc.fixModeLabel', { selector: 'legend' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('qc.judgeLabel', { selector: 'legend' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('textbox', { name: 'qc.stepsOptional' }),
+    ).not.toBeRequired();
     await user.type(
-      screen.getByRole('textbox', { name: 'qc.reviewNoteLabel' }),
-      '确认是占位页',
+      screen.getByRole('textbox', { name: 'qc.checkName' }),
+      '文档可读',
     );
-    await user.click(screen.getByRole('button', { name: 'qc.confirmFailed' }));
+    for (const key of [
+      'definition',
+      'preconditions',
+      'passCriteria',
+      'evidence',
+    ])
+      await user.type(
+        screen.getByRole('textbox', { name: 'qc.' + key }),
+        key + ' 内容',
+      );
+    await user.click(
+      screen.getByRole('button', { name: 'qc.save', exact: true }),
+    );
     await waitFor(() =>
       expect(api.request).toHaveBeenCalledWith(
         expect.objectContaining({
-          path: 'quality/projects/10/runs/70/results/71/review',
+          path: 'quality/projects/10/checks',
           method: 'POST',
-          json: { conclusion: 'failed', note: '确认是占位页' },
+          json: expect.objectContaining({
+            name: '文档可读',
+            judgeMode: 'human',
+            command: null,
+            steps: '',
+          }),
+        }),
+      ),
+    );
+    const posted = api.request.mock.calls.find(
+      ([v]) => v.method === 'POST',
+    )![0] as { json: Record<string, unknown> };
+    expect(posted.json).not.toHaveProperty('fixMode');
+    expect(posted.json).not.toHaveProperty('humanReview');
+  });
+  it('sends the handling with a new version that makes a Check automated', async () => {
+    const human = structuredClone(detail);
+    human.standards[0]!.judgeMode = 'human';
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? {}
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users' || path.endsWith('/runs')
+                ? []
+                : human,
+      }),
+    );
+    const user = userEvent.setup();
+    show('edit-standard&record=14');
+    await screen.findByRole('textbox', { name: 'qc.definition' });
+    expect(
+      screen.queryByText('qc.fixModeLabel', { selector: 'legend' }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByText('qc.checkKindName.automated'));
+    await user.click(screen.getByText('qc.fixMode.pr'));
+    await user.click(
+      screen.getByRole('button', { name: 'qc.save', exact: true }),
+    );
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/checks/14/versions',
+          json: expect.objectContaining({
+            judgeMode: 'agent',
+            fixMode: 'pr',
+            baseVersion: 1,
+          }),
+        }),
+      ),
+    );
+  });
+  it('scores a cell of human Checks without a run and changes a state from the cell', async () => {
+    const human = structuredClone(detail);
+    human.standards[0]!.judgeMode = 'human';
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? []
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users'
+                ? [{ id: 'u1', name: '测试负责人' }]
+                : path.includes('/manual-states?')
+                  ? [
+                      {
+                        id: 1,
+                        projectId: 10,
+                        checkId: 14,
+                        objectId: 12,
+                        status: 'rereview',
+                        note: '标准改了',
+                        createdBy: 'u1',
+                        createdAt: '2026-10-06T08:00:00Z',
+                      },
+                    ]
+                  : path.endsWith('/runs')
+                    ? []
+                    : human,
+      }),
+    );
+    const user = userEvent.setup();
+    show('coverage');
+    // Not reviewed counts as not passed.
+    await user.click(await screen.findByRole('button', { name: /0\.0/ }));
+    expect(
+      await screen.findByText('qc.manual.status.unreviewed'),
+    ).toBeVisible();
+    await user.click(screen.getByRole('button', { name: /qc.manual.history/ }));
+    expect(await screen.findByText('标准改了')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'qc.manual.update' }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'qc.manual.note' }),
+      'https://example.com/review/1',
+    );
+    await user.click(screen.getByRole('button', { name: 'qc.manual.update' }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/manual-states',
+          method: 'POST',
+          json: {
+            items: [{ checkId: 14, objectId: 12 }],
+            status: 'reviewed',
+            note: 'https://example.com/review/1',
+          },
+        }),
+      ),
+    );
+    cleanup();
+    human.manualStates = [
+      {
+        id: 2,
+        projectId: 10,
+        checkId: 14,
+        objectId: 12,
+        status: 'reviewed',
+        note: null,
+        createdBy: 'u1',
+        createdAt: '2026-10-06T09:00:00Z',
+      },
+    ];
+    show('coverage');
+    expect(await screen.findByRole('button', { name: /10\.0/ })).toBeVisible();
+  });
+  it('sets the state of human Checks in several cells at once', async () => {
+    const human = structuredClone(detail);
+    human.standards[0]!.judgeMode = 'human';
+    human.applicability.push({
+      id: 17,
+      projectId: 10,
+      objectId: 13,
+      dimensionId: 11,
+    });
+    human.checks.push({
+      ...human.checks[0]!,
+      id: 20,
+      objectId: null,
+      scope: 'shared',
+      key: 'docs',
+      name: '文档可读',
+    });
+    human.standards.push({ ...human.standards[0]!, id: 21, checkId: 20 });
+    api.request.mockImplementation(
+      async ({ path, method }: { path: string; method?: string }) => ({
+        data:
+          method === 'POST'
+            ? []
+            : path === 'quality/projects'
+              ? [detail.project]
+              : path === 'quality/users' || path.endsWith('/runs')
+                ? []
+                : human,
+      }),
+    );
+    const user = userEvent.setup();
+    show('coverage');
+    await user.click(
+      await screen.findByRole('button', { name: /qc.manual.batch/ }),
+    );
+    const cells = screen.getAllByRole('checkbox', {
+      name: /qc.manual.selectCell/,
+    });
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) await user.click(cell);
+    await user.click(screen.getByRole('button', { name: 'qc.manual.update' }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: 'quality/projects/10/manual-states',
+          method: 'POST',
+          json: {
+            items: [
+              { checkId: 20, objectId: 12 },
+              { checkId: 14, objectId: 12 },
+              { checkId: 20, objectId: 13 },
+            ],
+            status: 'reviewed',
+          },
         }),
       ),
     );
