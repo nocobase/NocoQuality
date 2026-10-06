@@ -21,7 +21,7 @@ import type {
   TestObject,
 } from './types.js';
 import { SectionTitle } from './ui.js';
-import { useRequest } from './use-quality-data.js';
+import { useRequest, useUsers } from './use-quality-data.js';
 import { useSubmission } from './use-submission.js';
 
 const CATEGORIES = [
@@ -98,7 +98,7 @@ export function CheckEditForm({
   );
 }
 
-// Edits an object's name, category, description and the materials behind it.
+// Edits an object's name, category, description, owner and the materials behind it.
 export function ObjectEditForm({
   detail,
   object,
@@ -112,7 +112,9 @@ export function ObjectEditForm({
 }) {
   const { t } = useTranslation();
   const { submit, busy, error } = useSubmission();
+  const users = useUsers();
   const [category, setCategory] = useState(object.category);
+  const [ownerId, setOwnerId] = useState(object.ownerId ?? '');
   const [materials, setMaterials] = useState<MaterialRow[]>(() =>
     (object.materials ?? []).map(toRow),
   );
@@ -142,6 +144,7 @@ export function ObjectEditForm({
           {
             name: data.get('name'),
             category,
+            ownerId: ownerId || null,
             description: text(data.get('description')),
             materials: materials
               .map(({ type, ref }) => ({ type, ref: ref.trim() }))
@@ -166,6 +169,24 @@ export function ObjectEditForm({
           label: t('qc.category.' + v),
         }))}
       />
+      <div className='space-y-2'>
+        <Choice
+          label={t('qc.owner')}
+          value={ownerId}
+          onChange={setOwnerId}
+          items={[
+            { value: '', label: t('qc.noOwner') },
+            // An owner whose account is no longer listed stays selectable until someone picks another.
+            ...(ownerId && !users.some((u) => u.id === ownerId)
+              ? [{ value: ownerId, label: ownerId }]
+              : []),
+            ...users.map((u) => ({ value: u.id, label: u.name })),
+          ]}
+        />
+        <p className='text-xs leading-5 text-muted-foreground'>
+          {t('qc.ownerHint')}
+        </p>
+      </div>
       <Field
         name='description'
         label={t('qc.objectDescription')}

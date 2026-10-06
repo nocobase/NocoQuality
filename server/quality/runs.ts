@@ -142,7 +142,8 @@ export async function importRun(
               objectId: object.id,
               kind: r.prUrl ? 'pr_review' : 'manual',
               title: check.name + ' · ' + object.name,
-              assigneeId: check.assigneeId || userId,
+              // The module's owner handles it; without one the to-do stays unassigned.
+              assigneeId: object.ownerId ?? null,
               prUrl: r.prUrl ?? null,
               status: 'open',
               createdAt: now,
@@ -155,10 +156,14 @@ export async function importRun(
     }
     return { run, items };
   });
-  // One in-app message per assignee and run, sent after the data is committed.
+  // One in-app message per assignee and run, sent after the data is committed; unassigned to-dos notify nobody.
   const byAssignee = new Map<string, number>();
   for (const item of created.items)
-    byAssignee.set(item.assigneeId, (byAssignee.get(item.assigneeId) ?? 0) + 1);
+    if (item.assigneeId)
+      byAssignee.set(
+        item.assigneeId,
+        (byAssignee.get(item.assigneeId) ?? 0) + 1,
+      );
   for (const [assignee, count] of byAssignee)
     await notification.send({
       idempotencyKey: 'qc-run-' + created.run.id + '-' + assignee,

@@ -203,7 +203,8 @@ export function DefinitionForm({
     </FormFrame>
   );
 }
-// Files a to-do outside any run; the required context lets someone else take it over without asking.
+// Files a to-do outside any run; the required context lets someone else take it over without asking. It may stay
+// unassigned; picking a module hands it to that module's owner until someone chooses a person.
 export function WorkItemForm({
   detail,
   onCancel,
@@ -216,15 +217,18 @@ export function WorkItemForm({
   const { t } = useTranslation();
   const users = useUsers();
   const { submit, busy, error } = useSubmission();
-  const [assignee, setAssignee] = useState('');
+  // null until someone picks: then the related module's owner, or nobody.
+  const [assignee, setAssignee] = useState<string | null>(null);
   const [objectId, setObjectId] = useState('');
-  const assigneeValue = assignee || users[0]?.id || '';
+  const assigneeValue =
+    assignee ??
+    detail.objects.find((o) => String(o.id) === objectId)?.ownerId ??
+    '';
   return (
     <FormFrame
       title={t('qc.newWorkItem')}
       busy={busy}
       error={error}
-      disabled={!assigneeValue}
       onCancel={onCancel}
       onSubmit={(e) => {
         e.preventDefault();
@@ -239,7 +243,7 @@ export function WorkItemForm({
           'quality/projects/' + detail.project.id + '/work-items',
           {
             title: v.title,
-            assigneeId: assigneeValue,
+            assigneeId: assigneeValue || null,
             prUrl: optional('prUrl'),
             objectId: objectId ? Number(objectId) : null,
             problem: v.problem,
@@ -262,7 +266,10 @@ export function WorkItemForm({
           label={t('qc.assignee')}
           value={assigneeValue}
           onChange={setAssignee}
-          items={users.map((u) => ({ value: u.id, label: u.name }))}
+          items={[
+            { value: '', label: t('qc.unassigned') },
+            ...users.map((u) => ({ value: u.id, label: u.name })),
+          ]}
         />
         <Choice
           label={t('qc.relatedObject')}

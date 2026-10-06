@@ -108,7 +108,8 @@ function createFakeAuthorization() {
 }
 
 // Two objects share one dimension; object 3 is paused and object 2 turned the shared Check off.
-// Check 2 is judged by a person, so runs leave it out.
+// Check 2 is judged by a person, so runs leave it out. Object 1 is owned by `owner`; the others have no owner.
+// Check 1 still carries an assignee in the retired column, which nothing reads any more.
 function seed(): Record<string, Row[]> {
   return {
     qcProjects: [{ id: 1, key: 'p1', name: 'P', type: 'custom', active: true }],
@@ -126,6 +127,7 @@ function seed(): Record<string, Row[]> {
       testingPaused: id === 3,
       pausedReason: null,
       materials: null,
+      ownerId: id === 1 ? 'owner' : null,
     })),
     qcApplicability: [1, 2, 3].map((id) => ({
       id,
@@ -144,7 +146,7 @@ function seed(): Record<string, Row[]> {
         name: 'Shared',
         active: true,
         fixMode: 'assign',
-        assigneeId: 'owner',
+        assigneeId: 'retired',
         source: null,
       },
       {
@@ -181,10 +183,18 @@ async function setup(nocoproject?: Record<string, unknown>) {
   container.instance(authenticationToken, createFakeAuth());
   container.instance(authorizationToken, createFakeAuthorization() as never);
   container.instance(databaseManagerToken, database.manager);
-  container.instance(
-    userAdministrationServiceToken,
-    {} as UserAdministrationService,
+  // `disabled` is an account that can no longer be given work.
+  const accounts = new Map<string, { id: string; disabledAt: string | null }>(
+    [
+      ['root', null],
+      ['owner', null],
+      ['helper', null],
+      ['disabled', '2026-10-01T00:00:00.000Z'],
+    ].map(([id, disabledAt]) => [id!, { id: id!, disabledAt }]),
   );
+  container.instance(userAdministrationServiceToken, {
+    get: async (userId: string) => accounts.get(userId),
+  } as unknown as UserAdministrationService);
   container.instance(notificationServiceToken, {
     send: async (message: unknown) => {
       sent.push(message);
@@ -780,5 +790,263 @@ describe('the state of human-judged Checks', () => {
         })
       ).status,
     ).toBe(400);
+  });
+});
+
+describe('owners on modules, not on Checks', () => {
+  async function failOnce(
+    request: Awaited<ReturnType<typeof setup>>['request'],
+  ) {
+    const started = (await (
+      await request('POST', '/projects/1/runs', {})
+    ).json()) as { data: { id: number } };
+    await request(
+      'POST',
+      `/projects/1/runs/${started.data.id}/results`,
+      report(1, 1, 'failed'),
+    );
+    await request('POST', `/projects/1/runs/${started.data.id}/finish`, {});
+    return started.data.id;
+  }
+
+  it("gives a run to-do to the module's owner, whoever triggered the run", async () => {
+    const { request, tables } = await setup();
+    await request('POST', '/projects/1/runs', {}, 'quality-member');
+    await request('POST', '/projects/1/runs/1/results', report(1, 1, 'failed'));
+    expect(tables.get('qcWorkItems')![0]).toMatchObject({
+      assigneeId: 'owner',
+    });
+  });
+
+  it('leaves the to-do unassigned when the module has no owner, and notifies nobody', async () => {
+    const { request, tables, sent } = await setup();
+    tables.get('qcObjects')![0]!.ownerId = null;
+    await failOnce(request);
+    expect(tables.get('qcWorkItems')![0]).toMatchObject({
+      assigneeId: null,
+      status: 'open',
+    });
+    expect(sent).toHaveLength(0);
+    const unassigned = (await (
+      await request('GET', '/projects/1/work-items?scope=unassigned')
+    ).json()) as { data: { id: number }[] };
+    expect(unassigned.data.map((i) => i.id)).toEqual([1]);
+    const mine = (await (
+      await request('GET', '/projects/1/work-items')
+    ).json()) as { data: unknown[] };
+    expect(mine.data).toEqual([]);
+  });
+
+  it('gives imported run to-dos to the owner too, never to the importer', async () => {
+    const { request, tables, sent } = await setup();
+    tables.get('qcObjects')![1]!.ownerId = null;
+    tables.get('qcCheckExclusions')!.length = 0;
+    const response = await request('POST', '/projects/1/runs/import', {
+      id: '2026-10-06-01',
+      status: 'completed',
+      startedAt: '2026-10-06T00:00:00.000Z',
+      results: [
+        { checkId: 1, standardId: 2, objectId: 1, conclusion: 'failed' },
+        { checkId: 1, standardId: 2, objectId: 2, conclusion: 'failed' },
+      ],
+    });
+    expect(response.status).toBe(201);
+    expect(
+      tables.get('qcWorkItems')!.map((i) => [i.objectId, i.assigneeId]),
+    ).toEqual([
+      [1, 'owner'],
+      [2, null],
+    ]);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        messages: { inbox: expect.objectContaining({ to: 'owner' }) },
+      }),
+    ]);
+  });
+
+  it('hands a to-do to someone else, records who changed it and when, and keeps it through later runs', async () => {
+    const { request, tables } = await setup();
+    await failOnce(request);
+    const moved = await request(
+      'POST',
+      '/projects/1/work-items/1/assignee',
+      { assigneeId: 'helper' },
+      'quality-member',
+    );
+    expect(moved.status).toBe(200);
+    await request('POST', '/projects/1/work-items/1/assignee', {
+      assigneeId: null,
+    });
+    expect(tables.get('qcWorkItemAssignments')).toEqual([
+      expect.objectContaining({
+        workItemId: 1,
+        fromAssigneeId: 'owner',
+        toAssigneeId: 'helper',
+        changedBy: 'quality-member',
+        changedAt: expect.any(String),
+      }),
+      expect.objectContaining({
+        fromAssigneeId: 'helper',
+        toAssigneeId: null,
+        changedBy: 'root',
+      }),
+    ]);
+    // Setting the same handler again records nothing.
+    await request('POST', '/projects/1/work-items/1/assignee', {
+      assigneeId: null,
+    });
+    expect(tables.get('qcWorkItemAssignments')).toHaveLength(2);
+    // A later failure continues the to-do without taking it back to the owner.
+    await request('POST', '/projects/1/work-items/1/assignee', {
+      assigneeId: 'helper',
+    });
+    await failOnce(request);
+    expect(tables.get('qcWorkItems')).toEqual([
+      expect.objectContaining({ assigneeId: 'helper', occurrences: 2 }),
+    ]);
+    const opened = (await (
+      await request('GET', '/projects/1/work-items/1')
+    ).json()) as { data: { assignments: { toAssigneeId: string | null }[] } };
+    expect(opened.data.assignments.map((a) => a.toAssigneeId)).toEqual([
+      'helper',
+      null,
+      'helper',
+    ]);
+  });
+
+  it('refuses unknown or disabled handlers, missing to-dos and restricted callers', async () => {
+    const { request } = await setup();
+    await failOnce(request);
+    const assign = (body: unknown, user = 'root', item = 1) =>
+      request('POST', `/projects/1/work-items/${item}/assignee`, body, user);
+    expect(await (await assign({ assigneeId: 'nobody' })).json()).toEqual({
+      error: { code: 'INVALID_USER' },
+    });
+    expect((await assign({ assigneeId: 'disabled' })).status).toBe(400);
+    expect((await assign({})).status).toBe(400);
+    expect((await assign({ assigneeId: 'helper' }, 'root', 9)).status).toBe(
+      404,
+    );
+    expect((await assign({ assigneeId: 'helper' }, '')).status).toBe(401);
+    expect((await assign({ assigneeId: 'helper' }, 'member')).status).toBe(403);
+  });
+
+  it("sets a module's owner on the object, and keeps it when the update leaves it out", async () => {
+    const { request, tables } = await setup();
+    const body = {
+      name: 'Object 2',
+      category: 'feature',
+      description: '',
+      materials: [],
+    };
+    expect(
+      (
+        await request('POST', '/projects/1/objects/2/update', {
+          ...body,
+          ownerId: 'helper',
+        })
+      ).status,
+    ).toBe(200);
+    expect(tables.get('qcObjects')![1]!.ownerId).toBe('helper');
+    await request('POST', '/projects/1/objects/2/update', body);
+    expect(tables.get('qcObjects')![1]!.ownerId).toBe('helper');
+    const invalid = await request('POST', '/projects/1/objects/2/update', {
+      ...body,
+      ownerId: 'nobody',
+    });
+    expect(await invalid.json()).toEqual({ error: { code: 'INVALID_USER' } });
+    await request('POST', '/projects/1/objects/2/update', {
+      ...body,
+      ownerId: null,
+    });
+    expect(tables.get('qcObjects')![1]!.ownerId).toBeNull();
+    // The workspace reads owners with the objects, and no longer sees an assignee on a Check.
+    const detail = (await (await request('GET', '/projects/1')).json()) as {
+      data: { objects: { ownerId: string | null }[]; checks: object[] };
+    };
+    expect(detail.data.objects.map((o) => o.ownerId)).toEqual([
+      'owner',
+      null,
+      null,
+    ]);
+    expect(detail.data.checks[0]).not.toHaveProperty('assigneeId');
+  });
+
+  it('takes no assignee on a Check', async () => {
+    const { request, tables } = await setup();
+    const check = {
+      name: 'Owned by the module',
+      scope: 'shared',
+      dimensionId: 1,
+      definition: 'd',
+      preconditions: 'p',
+      steps: 's',
+      passCriteria: 'c',
+      evidence: 'e',
+    };
+    expect(
+      (
+        await request('POST', '/projects/1/checks', {
+          ...check,
+          assigneeId: 'owner',
+        })
+      ).status,
+    ).toBe(400);
+    const created = await request('POST', '/projects/1/checks', check);
+    expect(created.status).toBe(201);
+    expect(tables.get('qcChecks')!.at(-1)).not.toHaveProperty('assigneeId');
+    expect(
+      (
+        await request('POST', '/projects/1/checks/1/settings', {
+          fixMode: 'pr',
+          assigneeId: 'owner',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request('POST', '/projects/1/checks/1/settings', {
+          fixMode: 'pr',
+        })
+      ).status,
+    ).toBe(200);
+    expect(tables.get('qcChecks')![0]).toMatchObject({
+      fixMode: 'pr',
+      assigneeId: 'retired',
+    });
+  });
+
+  it('files a to-do by hand without anyone to handle it yet', async () => {
+    const { request, tables } = await setup();
+    const body = {
+      title: 'Docs page is missing',
+      problem: 'p',
+      scenario: 's',
+      evidence: 'e',
+      handling: 'h',
+    };
+    expect((await request('POST', '/projects/1/work-items', body)).status).toBe(
+      201,
+    );
+    expect(
+      (
+        await request('POST', '/projects/1/work-items', {
+          ...body,
+          assigneeId: 'helper',
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await request('POST', '/projects/1/work-items', {
+          ...body,
+          assigneeId: 'nobody',
+        })
+      ).status,
+    ).toBe(400);
+    expect(tables.get('qcWorkItems')!.map((i) => i.assigneeId)).toEqual([
+      null,
+      'helper',
+    ]);
   });
 });

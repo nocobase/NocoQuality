@@ -49,6 +49,7 @@ import type {
   Result,
   Run,
   WorkItem,
+  WorkItemAssignment,
 } from '../quality/types.js';
 
 const name = z.string().trim().min(1).max(120);
@@ -116,12 +117,16 @@ const objectSchema = z
     materials: materialsSchema.optional(),
   })
   .strict();
+// A user id, or null for nobody.
+const userRef = z.string().min(1).max(64).nullable();
 const objectUpdateSchema = z
   .object({
     name,
     category: objectSchema.shape.category,
     description: z.string().trim().max(10000),
     materials: materialsSchema,
+    // Left out keeps the current owner.
+    ownerId: userRef.optional(),
   })
   .strict();
 const checkUpdateSchema = z
@@ -138,7 +143,6 @@ const checkSchema = z
     name,
     scope: z.enum(['object', 'shared']).default('object'),
     fixMode: z.enum(['pr', 'assign']).default('assign'),
-    assigneeId: z.string().min(1).max(64).nullable().optional(),
     objectId: id.optional(),
     dimensionId: id,
     source: z.string().trim().max(10000).nullable().optional(),
@@ -160,6 +164,15 @@ export default [
       get: (key: 'auth') => AuthEnv['Variables']['auth'];
     }) => c.get('auth')?.user.id ?? '';
     const auth = app.container.resolve(authenticationToken);
+    // Owners and handlers must be enabled accounts.
+    const assertUser = async (userId: string | null | undefined) => {
+      if (!userId) return;
+      const user = await app.container
+        .resolve(userAdministrationServiceToken)
+        .get(userId);
+      if (!user || user.disabledAt !== null)
+        throw new HTTPException(400, { message: 'INVALID_USER' });
+    };
     const authz = app.container.resolve(authorizationToken);
     const db = app.container.resolve(databaseManagerToken);
     const nocoProjectConfig = () =>
@@ -313,7 +326,13 @@ export default [
             ({ sourceSnapshot: _snapshot, ...object }) => object,
           ),
           dimensions: dimensions.sort((a, b) => a.position - b.position),
-          checks,
+          // The retired Check assignee column is still stored; the module's owner handles a Check now.
+          checks: checks.map((check) => {
+            const { assigneeId: _retired, ...rest } = check as Check & {
+              assigneeId?: unknown;
+            };
+            return rest;
+          }),
           standards,
           applicability,
         },
@@ -437,11 +456,13 @@ export default [
       });
       return c.json({ data: { id: objectId, testingPaused: !input.enabled } });
     });
-    // Names, descriptions and materials change in place; applicability and history stay as they are.
+    // Names, descriptions, materials and the owner change in place; applicability and history stay as they are.
+    // A new owner takes the module's future to-dos; existing to-dos keep their handler.
     router.post('/projects/:id/objects/:objectId/update', async (c) => {
       const projectId = id.parse(c.req.param('id'));
       const objectId = id.parse(c.req.param('objectId'));
       const input = objectUpdateSchema.parse(await c.req.json());
+      await assertUser(input.ownerId);
       const repo = db.repository<TestObject>('qcObjects');
       if (
         !(await repo.exists({
@@ -529,7 +550,6 @@ export default [
         objectId,
         dimensionId,
         fixMode,
-        assigneeId,
         source,
         ...standard
       } = checkSchema.parse(await c.req.json());
@@ -551,7 +571,6 @@ export default [
               projectId,
               scope,
               fixMode,
-              assigneeId: assigneeId ?? null,
               source: source || null,
               objectId: scope === 'shared' ? null : objectId,
               dimensionId,
@@ -722,15 +741,12 @@ export default [
       });
       return c.json({ data: result }, 201);
     });
-    // How a not-passed result of this Check is handled, and who reviews or handles it.
+    // How a not-passed result of this Check is handled; who handles it is the owner of the module it fails on.
     router.post('/projects/:id/checks/:checkId/settings', async (c) => {
       const projectId = id.parse(c.req.param('id'));
       const checkId = id.parse(c.req.param('checkId'));
       const input = z
-        .object({
-          fixMode: z.enum(['pr', 'assign']),
-          assigneeId: z.string().min(1).max(64).nullable(),
-        })
+        .object({ fixMode: z.enum(['pr', 'assign']) })
         .strict()
         .parse(await c.req.json());
       const repo = db.repository<Check>('qcChecks');
@@ -964,12 +980,21 @@ export default [
         201,
       );
     });
+    // scope=mine (default) lists the caller's to-dos, all lists everyone's, unassigned those nobody handles yet.
     router.get('/projects/:id/work-items', async (c) => {
       const projectId = id.parse(c.req.param('id'));
-      const mine = c.req.query('scope') !== 'all';
-      const items = await db.repository<WorkItem>('qcWorkItems').findMany({
-        filter: { projectId, ...(mine ? { assigneeId: userId(c) } : {}) },
-      });
+      const scope = z
+        .enum(['mine', 'all', 'unassigned'])
+        .catch('mine')
+        .parse(c.req.query('scope'));
+      const items = (
+        await db.repository<WorkItem>('qcWorkItems').findMany({
+          filter: {
+            projectId,
+            ...(scope === 'mine' ? { assigneeId: userId(c) } : {}),
+          },
+        })
+      ).filter((i) => scope !== 'unassigned' || !i.assigneeId);
       const runs = await db
         .repository<Run>('qcRuns')
         .findMany({ filter: { projectId } });
@@ -990,7 +1015,8 @@ export default [
       const input = z
         .object({
           title: z.string().trim().min(1).max(300),
-          assigneeId: z.string().min(1).max(64),
+          // Left out or null files it unassigned.
+          assigneeId: userRef.optional(),
           prUrl: z.url().max(500).nullable().optional(),
           objectId: id.nullable().optional(),
           checkId: id.nullable().optional(),
@@ -1003,6 +1029,7 @@ export default [
         })
         .strict()
         .parse(await c.req.json());
+      await assertUser(input.assigneeId);
       if (
         input.objectId &&
         !(await db.repository<TestObject>('qcObjects').exists({
@@ -1028,7 +1055,7 @@ export default [
             objectId: input.objectId ?? null,
             kind: input.prUrl ? 'pr_review' : 'manual',
             title: input.title,
-            assigneeId: input.assigneeId,
+            assigneeId: input.assigneeId ?? null,
             prUrl: input.prUrl ?? null,
             prState: input.prUrl ? 'open' : null,
             problem: input.problem,
@@ -1093,11 +1120,18 @@ export default [
               .sort((x, y) => y.startedAt.localeCompare(x.startedAt))
               .slice(0, 30)
           : [];
+      // Every change of the handler, newest first.
+      const assignments = (
+        await db
+          .repository<WorkItemAssignment>('qcWorkItemAssignments')
+          .findMany({ filter: { projectId, workItemId: item.id } })
+      ).sort((x, y) => y.id - x.id);
       return c.json({
         data: {
           item,
           result,
           history,
+          assignments,
           run: run && {
             id: run.id,
             key: run.key,
@@ -1106,6 +1140,43 @@ export default [
           },
         },
       });
+    });
+    // Hands one to-do to someone else, or back to nobody; each change is recorded with who made it and when.
+    // To move a module's to-dos for good, change the module's owner instead.
+    router.post('/projects/:id/work-items/:itemId/assignee', async (c) => {
+      const projectId = id.parse(c.req.param('id'));
+      const itemId = id.parse(c.req.param('itemId'));
+      const { assigneeId } = z
+        .object({ assigneeId: userRef })
+        .strict()
+        .parse(await c.req.json());
+      await assertUser(assigneeId);
+      const result = await db.transaction(async (conn) => {
+        const repo = conn.repository<WorkItem>('qcWorkItems');
+        const item = await repo.findOne({ filter: { id: itemId, projectId } });
+        if (!item)
+          throw new HTTPException(404, { message: 'WORK_ITEM_NOT_FOUND' });
+        if ((item.assigneeId ?? null) === assigneeId) return item;
+        await conn
+          .repository<WorkItemAssignment>('qcWorkItemAssignments')
+          .createOne({
+            values: {
+              projectId,
+              workItemId: itemId,
+              fromAssigneeId: item.assigneeId ?? null,
+              toAssigneeId: assigneeId,
+              changedBy: userId(c),
+              changedAt: new Date().toISOString(),
+            },
+          });
+        return (
+          await repo.updateOne({
+            filter: { id: itemId, projectId },
+            values: { assigneeId },
+          })
+        ).record;
+      });
+      return c.json({ data: result });
     });
     // PR states come from the executor's gh; the server has no GitHub credentials of its own.
     router.post('/projects/:id/work-items/pr-states', async (c) => {

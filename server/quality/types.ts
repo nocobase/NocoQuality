@@ -43,6 +43,9 @@ export interface TestObject {
   pausedReason: string | null;
   // Skills, packages and documentation pages that belong to the object.
   materials: Material[] | null;
+  // The module's owner (a user id) is the first person responsible for every Check on it: to-dos raised by its
+  // failures go to them and they keep its human-judged Check states. Empty means nobody yet; to-dos stay unassigned.
+  ownerId: string | null;
 }
 export type MaterialType = 'skill' | 'package' | 'doc' | 'other';
 export interface Material {
@@ -61,8 +64,8 @@ export interface Check {
   name: string;
   active: boolean;
   fixMode: FixMode;
-  // Reviews the PR, or handles the not-passed result by hand.
-  assigneeId: string | null;
+  // A Check has no owner of its own: its module's owner handles it. The old assigneeId column stays in the table,
+  // no longer written or read, because dropping a column on SQLite rebuilds a table other tables reference.
   // The problem, PR or report this Check guards against.
   source: string | null;
 }
@@ -180,7 +183,8 @@ export interface WorkItem {
   // review is kept by to-dos from the removed human review of results.
   kind: 'pr_review' | 'manual' | 'review';
   title: string;
-  assigneeId: string;
+  // Who handles it; empty while unassigned. A run to-do starts with its module's owner and changes only by hand.
+  assigneeId: string | null;
   prUrl: string | null;
   status: 'open' | 'done';
   createdAt: string;
@@ -191,4 +195,14 @@ export interface WorkItem {
   lastResultId: number | null;
   occurrences: number;
   lastSeenAt: string | null;
+}
+// One change of a to-do's handler; the to-do's assigneeId is the current one.
+export interface WorkItemAssignment {
+  id: number;
+  projectId: number;
+  workItemId: number;
+  fromAssigneeId: string | null;
+  toAssigneeId: string | null;
+  changedBy: string;
+  changedAt: string;
 }

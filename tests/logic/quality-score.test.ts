@@ -26,7 +26,6 @@ const check = (id: number, scope: Check['scope'] = 'object'): Check => ({
   name: 'Check ' + id,
   active: true,
   fixMode: 'assign',
-  assigneeId: null,
   source: null,
 });
 const standard = (

@@ -6,6 +6,7 @@ import {
   ListChecks,
   Plus,
   Search,
+  UserRound,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -37,11 +38,12 @@ import {
   isApplicable,
   manualChecksFor,
   manualPairs,
+  userName,
 } from './model.js';
 import { Choice, Empty } from './form.js';
 import { ManualStateForm } from './manual.js';
 import { CellResultsSheet, ScoreChip } from './runs.js';
-import { useLatestRun } from './use-quality-data.js';
+import { useLatestRun, useUsers } from './use-quality-data.js';
 // The quality matrix: objects by dimensions, each cell showing its score or what is missing. Batch mode selects
 // cells to set the state of their human-judged Checks at once.
 
@@ -62,6 +64,7 @@ export function Coverage({
 }) {
   const { t } = useTranslation();
   const latest = useLatestRun(detail.project.id, revision);
+  const users = useUsers();
   // Clicking a score opens that cell's results here instead of leaving the matrix.
   const [cell, setCell] = useState<{ o: number; d: number } | null>(null);
   const [search, setSearch] = useState('');
@@ -218,6 +221,13 @@ export function Coverage({
                       >
                         <TableCell className='min-w-36 sm:min-w-52'>
                           <p className='font-medium'>{o.name}</p>
+                          <p
+                            className='mt-0.5 flex items-center gap-1 text-xs text-muted-foreground'
+                            title={t('qc.owner')}
+                          >
+                            <UserRound className='size-3' />
+                            {userName(users, o.ownerId, t('qc.noOwner'))}
+                          </p>
                           {o.testingPaused && (
                             <Badge
                               variant='outline'
