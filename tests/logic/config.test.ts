@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { AuthConfig } from '@nocobase/app-plugin-authentication/server';
 import type { AuthorizationConfig } from '@nocobase/app-plugin-authorization/server';
 import { type AppIdentityConfig } from '@nocobase/app-server/config';
 import { type AppDatabaseConfig } from '@nocobase/app-server/database';
@@ -32,6 +33,23 @@ describe('application config', () => {
   });
   afterAll(async () => {
     await rm(configRoot, { recursive: true, force: true });
+  });
+
+  it('keeps self sign-up closed when the deployment configuration only sets the secret', async () => {
+    const deployedConfigPath = path.join(configRoot, 'deployed.yml');
+    await writeFile(
+      deployedConfigPath,
+      'auth:\n  secret: test-auth-secret-at-least-32-characters\n',
+    );
+    const runtime = await resolveStandaloneAppRuntime(appRuntime, {
+      rootDir: templateRootDir,
+      configPath: deployedConfigPath,
+      env: {},
+    });
+
+    expect(
+      runtime.config.get<AuthConfig>('auth')!.emailAndPassword,
+    ).toMatchObject({ enabled: true, disableSignUp: true });
   });
 
   it('assembles module defaults in the runtime', async () => {

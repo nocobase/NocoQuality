@@ -10,7 +10,8 @@ const appRoutes: AppClientRouteContribution = defineAppRoutes([
     name: 'quality',
     path: '/quality',
     auth: 'required',
-    authz: 'unrestricted',
+    // Granted through a permission set; root sees it regardless. The server checks the same page grant.
+    authz: { resource: { type: 'page', id: 'quality' }, action: 'access' },
     componentLoader: () => import('./pages/quality/index.js'),
     navigation: { title: 'navigation.quality', icon: Layers3, order: 1 },
   },

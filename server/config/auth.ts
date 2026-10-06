@@ -9,7 +9,8 @@ import { username } from 'better-auth/plugins';
 const auth: AppConfigFactory<AuthConfig> = defineAuthConfig({
   defaults: {
     plugins: [username({ displayUsername: false }), apiKey()],
-    emailAndPassword: { enabled: true, autoSignIn: false },
+    // Accounts are created by an administrator in Users; the deployment is public, so nobody signs themselves up.
+    emailAndPassword: { enabled: true, autoSignIn: false, disableSignUp: true },
     session: { storeSessionInDatabase: true },
   },
 });

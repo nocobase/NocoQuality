@@ -132,6 +132,9 @@ const checkSchema = z
   .strict()
   .refine((v) => (v.scope === 'shared') === (v.objectId === undefined));
 
+// The page id of the quality workspace route in `client/routes.ts`; permission sets store grants against it.
+const QUALITY_PAGE = 'quality';
+
 export default [
   defineApiRoutes<Application>((app) => {
     const root = new Hono();
@@ -163,9 +166,17 @@ export default [
       );
     };
     router.use('*', auth.required(), authz.middleware());
-    // Initial delivery is a root-managed quality workspace. No member gains access through frontend project filtering.
+    // The quality workspace is open to root and to every permission set granted the `quality` page; the API checks
+    // the same grant as the page, so hiding the menu is never the only barrier.
     router.use('*', async (c, next) => {
-      if (!(await c.get('authz').snapshot()).unrestricted)
+      const context = c.get('authz');
+      if (
+        !(await context.snapshot()).unrestricted &&
+        !(await context.can({
+          resource: { type: 'page', id: QUALITY_PAGE },
+          action: 'access',
+        }))
+      )
         return c.json({ error: { code: 'FORBIDDEN' } }, 403);
       await next();
     });
@@ -183,14 +194,17 @@ export default [
       return c.json({ error: { code: 'REQUEST_FAILED' } }, 500);
     });
     // Full backup of every quality table, archived records included; the only copy of the data lives online.
-    router.get('/export', async (c) =>
-      c.json({
+    // The backup carries every account and record, so it stays with root even for quality members.
+    router.get('/export', async (c) => {
+      if (!(await c.get('authz').snapshot()).unrestricted)
+        return c.json({ error: { code: 'FORBIDDEN' } }, 403);
+      return c.json({
         data: await exportQualityData(
           db,
           app.container.resolve(userAdministrationServiceToken),
         ),
-      }),
-    );
+      });
+    });
     router.get('/projects', async (c) =>
       c.json({
         data: await db
